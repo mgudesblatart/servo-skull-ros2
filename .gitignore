@@ -17,3 +17,24 @@ CMakeUserPresets.json
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #cmake-build-*
+
+#Python
+#  The following lines are for Python projects and should be adjusted according to your project structure.
+#  If you are using virtual environments, you might want to keep the venv directory,
+#  but if you are using a different directory for your virtual environment, you might want to
+#  ignore that directory instead.
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+venv/
+
+#ROS2
+#  The following lines are for ROS2 projects and should be adjusted according to your project structure.
+#  If you are using ament_cmake, you might want to keep the build and
+#  install directories, but if you are using ament_python, you might want to ignore
+#  the build and install directories as well.
+build/
+install/
+log/
