@@ -1,8 +1,8 @@
 # servo_skull
 
-A mixed-language ROS 2 package for Raspberry Pi 5, containing both Python and C++ nodes.
+A python ROS 2 package for interfacing w/ the esp32.
 
-## Building and Installing All Nodes (Python and C++)
+## Building and Installing All Nodes
 
 1. **Ensure your Python packages are structured correctly:**
    - Each Python package directory (e.g., `servo_skull/servo_skull/`) must contain an `__init__.py` file (can be empty).
@@ -41,6 +41,10 @@ A mixed-language ROS 2 package for Raspberry Pi 5, containing both Python and C+
 ### Python Node
 ```bash
 ros2 run servo_skull_esp32 interface_node
+```
+#### Debugging
+```bash
+ros2 run servo_skull_esp32 interface_node --ros-args --log-level interface_node:=debug
 ```
 
 ## Notes
