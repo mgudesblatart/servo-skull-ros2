@@ -42,5 +42,28 @@ class TestPersonSensorNode(unittest.TestCase):
         self.assertEqual(msg.id, id)
         self.assertTrue(msg.is_facing)
 
+    def test_decode_low_confidence_face(self):
+        # Simulate a face with low confidence (should be ignored)
+        box_confidence = 50  # Below threshold
+        face_bytes = struct.pack(PERSON_SENSOR_FACE_FORMAT, box_confidence, 10, 10, 20, 20, 100, 1, 1)
+        header = struct.pack('BBH', 0, 0, 0)
+        num_faces = struct.pack('B', 1)
+        checksum = struct.pack('H', 0)
+        read_bytes = header + num_faces + face_bytes + b'\x00' * (self.node.PERSON_SENSOR_FACE_BYTE_COUNT * (self.node.PERSON_SENSOR_FACE_MAX - 1)) + checksum
+        self.node.i2c_handle = type('', (), {'read': lambda s, n: read_bytes})()
+        self.node.publisher_.published.clear()
+        self.node.timer_callback()
+        self.assertEqual(len(self.node.publisher_.published), 0)
+
+    def test_i2c_error_handling(self):
+        # Simulate an OSError during I2C read
+        class FailingI2C:
+            def read(self, n):
+                raise OSError('Simulated I2C failure')
+        self.node.i2c_handle = FailingI2C()
+        self.node.publisher_.published.clear()
+        self.node.timer_callback()
+        self.assertEqual(len(self.node.publisher_.published), 0)
+
 if __name__ == '__main__':
     unittest.main()
