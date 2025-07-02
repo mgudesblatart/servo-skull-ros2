@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from person_sensor_node.msg import PersonDetection
+from servo_skull_msgs.msg import PersonDetection
 import io
 import fcntl
 import struct

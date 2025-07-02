@@ -1,0 +1,6 @@
+# CMakeLists.txt for person_tracking_node tests
+ament_add_gtest(test_person_tracking_node test_person_tracking_node.cpp)
+target_link_libraries(test_person_tracking_node
+  gtest_main
+)
+ament_target_dependencies(test_person_tracking_node rclcpp servo_skull_msgs)
