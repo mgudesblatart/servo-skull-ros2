@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
 from servo_skull_msgs.msg import PersonDetection
@@ -69,7 +70,7 @@ class PersonSensorNode(Node):
                 (box_confidence, box_left, box_top, box_right, box_bottom, id_confidence, id, is_facing) = struct.unpack_from(PERSON_SENSOR_FACE_FORMAT, read_bytes, offset)
                 offset += PERSON_SENSOR_FACE_BYTE_COUNT
                 # Data filtering: ignore faces with low confidence
-                if box_confidence < 100:
+                if box_confidence < 90:
                     self.get_logger().info(f"Ignoring face {i} with low confidence: {box_confidence}")
                     continue
                 msg = PersonDetection()
