@@ -4,15 +4,14 @@
   <name>person_sensor_node</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="murray@todo.todo">murray</maintainer>
-  <license>TODO: License declaration</license>
+  <maintainer email="mgudesblatart@gmail.com">Murray Gudesblat</maintainer>
+  <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>servo_skull_msgs</depend>
 
-  <exec_depend>rosidl_default_runtime</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
@@ -20,6 +19,6 @@
   <test_depend>python3-pytest</test_depend>
 
   <export>
-    <build_type>ament_cmake</build_type>
+    <build_type>ament_python</build_type>
   </export>
 </package>
