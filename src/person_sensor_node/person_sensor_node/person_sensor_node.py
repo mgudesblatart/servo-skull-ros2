@@ -69,17 +69,18 @@ class PersonSensorNode(Node):
             try:
                 (box_confidence, box_left, box_top, box_right, box_bottom, id_confidence, id, is_facing) = struct.unpack_from(PERSON_SENSOR_FACE_FORMAT, read_bytes, offset)
                 offset += PERSON_SENSOR_FACE_BYTE_COUNT
+                self.get_logger().info(f"Face {i}: conf={box_confidence}, left={box_left}, top={box_top}, right={box_right}, bottom={box_bottom}, id_confidence={id_confidence}, id={id}, facing={is_facing}")
                 # Data filtering: ignore faces with low confidence
                 if box_confidence < 90:
                     self.get_logger().info(f"Ignoring face {i} with low confidence: {box_confidence}")
                     continue
                 msg = PersonDetection()
-                msg.box_confidence = float(box_confidence) / 255.0
-                msg.box_left = float(box_left) / 255.0
-                msg.box_top = float(box_top) / 255.0
-                msg.box_right = float(box_right) / 255.0
-                msg.box_bottom = float(box_bottom) / 255.0
-                msg.id_confidence = float(id_confidence) / 255.0
+                msg.box_confidence = float(box_confidence)
+                msg.box_left = float(box_left)
+                msg.box_top = float(box_top)
+                msg.box_right = float(box_right)
+                msg.box_bottom = float(box_bottom)
+                msg.id_confidence = float(id_confidence)
                 msg.id = int(id)
                 msg.is_facing = bool(is_facing)
                 self.publisher_.publish(msg)
