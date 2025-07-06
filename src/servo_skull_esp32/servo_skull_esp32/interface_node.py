@@ -5,8 +5,15 @@ import serial
 import threading
 from std_msgs.msg import String
 from geometry_msgs.msg import Point
+import glob
 
-SERIAL_PORT = "/dev/ttyUSB0"
+def find_serial_port():
+    candidates = sorted(glob.glob('/dev/ttyUSB*'))
+    if not candidates:
+        raise RuntimeError('No /dev/ttyUSB* devices found')
+    return candidates[0]
+
+SERIAL_PORT = find_serial_port()
 BAUDRATE = 115200
 
 
@@ -15,6 +22,8 @@ class ESP32InterfaceNode(Node):
         super().__init__("interface_node", enable_logger_service=True)
         try:
             self.serial = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=0.1)
+            self.serial.dtr = False
+            self.serial.rts = False
         except Exception as e:
             self.get_logger().error(f"Failed to open serial port: {e}")
             raise
@@ -47,7 +56,7 @@ class ESP32InterfaceNode(Node):
                 self.get_logger().error(f"Serial read error: {e}")
 
     def handle_serial_line(self, line):
-        self.get_logger().debug(f"Received serial line: {line}")
+        self.get_logger().info(f"Received serial line: {line}")
         if line.startswith("ULTRASONIC:"):
             msg = String()
             msg.data = line[len("ULTRASONIC:") :]
