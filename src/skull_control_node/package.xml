@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>skull_control_node</name>
+  <version>0.0.0</version>
+  <description>TODO: Package description</description>
+  <maintainer email="mgudesblatart@gmail.com">murray</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>servo_skull_msgs</depend>
+  <depend>person_tracking_node</depend>
+  <depend>person_sensor_node</depend>
+  <depend>servo_skull_esp32</depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
