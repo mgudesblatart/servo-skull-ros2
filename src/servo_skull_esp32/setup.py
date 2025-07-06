@@ -19,7 +19,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'interface_node = servo_skull_esp32.nodes.interface_node:main',
+            'interface_node = servo_skull_esp32:main',
         ],
     },
 )
