@@ -73,3 +73,5 @@ CLAUDE.md
 .env*
 .roo*
 .history*
+
+*.wav
