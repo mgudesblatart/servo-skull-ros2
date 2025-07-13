@@ -21,7 +21,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-             'skull_control_node = skull_control_node.skull_control_node:main',
+             'skull_control_node = skull_control_node.skull_control_bt_node:main',
         ],
     },
 )

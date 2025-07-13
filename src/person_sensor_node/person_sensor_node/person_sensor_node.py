@@ -7,6 +7,7 @@ import fcntl
 import struct
 import time
 import statistics
+import glob
 
 PERSON_SENSOR_I2C_ADDRESS = 0x62
 PERSON_SENSOR_I2C_HEADER_FORMAT = "BBH"
@@ -16,21 +17,45 @@ PERSON_SENSOR_FACE_BYTE_COUNT = struct.calcsize(PERSON_SENSOR_FACE_FORMAT)
 PERSON_SENSOR_FACE_MAX = 4
 PERSON_SENSOR_RESULT_FORMAT = PERSON_SENSOR_I2C_HEADER_FORMAT + "B" + PERSON_SENSOR_FACE_FORMAT * PERSON_SENSOR_FACE_MAX + "H"
 PERSON_SENSOR_RESULT_BYTE_COUNT = struct.calcsize(PERSON_SENSOR_RESULT_FORMAT)
-I2C_CHANNEL = 1
+I2C_CHANNEL = 12
 I2C_PERIPHERAL = 0x703
 PERSON_SENSOR_DELAY = 0.2
+
+def find_i2c_bus_for_address(address):
+    import errno
+    for dev in sorted(glob.glob('/dev/i2c-*')):
+        try:
+            handle = io.open(dev, 'rb', buffering=0)
+            try:
+                fcntl.ioctl(handle, I2C_PERIPHERAL, address)
+                handle.close()
+                return int(dev.split('-')[-1])
+            except OSError as e:
+                if e.errno == errno.EREMOTEIO:
+                    handle.close()
+                    continue
+                handle.close()
+        except Exception:
+            continue
+    return None
 
 class PersonSensorNode(Node):
     def __init__(self):
         super().__init__('person_sensor_node')
         self.publisher_ = self.create_publisher(PersonDetection, '/person_sensor/detections', 10)
         self.get_logger().info('Person Sensor Node started.')
-        try:
-            self.i2c_handle = io.open(f"/dev/i2c-{I2C_CHANNEL}", "rb", buffering=0)
-            fcntl.ioctl(self.i2c_handle, I2C_PERIPHERAL, PERSON_SENSOR_I2C_ADDRESS)
-            self.get_logger().info('Person Sensor I2C connection established.')
-        except Exception as e:
-            self.get_logger().error(f'Failed to open I2C device: {e}')
+        bus = find_i2c_bus_for_address(PERSON_SENSOR_I2C_ADDRESS)
+        if bus is not None:
+            self.get_logger().info(f'Found person sensor at I2C bus {bus}')
+            try:
+                self.i2c_handle = io.open(f"/dev/i2c-{bus}", "rb", buffering=0)
+                fcntl.ioctl(self.i2c_handle, I2C_PERIPHERAL, PERSON_SENSOR_I2C_ADDRESS)
+                self.get_logger().info('Person Sensor I2C connection established.')
+            except Exception as e:
+                self.get_logger().error(f'Failed to open I2C device: {e}')
+                self.i2c_handle = None
+        else:
+            self.get_logger().error('Person sensor not found on any I2C bus.')
             self.i2c_handle = None
         self.timer = self.create_timer(PERSON_SENSOR_DELAY, self.timer_callback)
 
@@ -71,7 +96,7 @@ class PersonSensorNode(Node):
                 offset += PERSON_SENSOR_FACE_BYTE_COUNT
                 self.get_logger().info(f"Face {i}: conf={box_confidence}, left={box_left}, top={box_top}, right={box_right}, bottom={box_bottom}, id_confidence={id_confidence}, id={id}, facing={is_facing}")
                 # Data filtering: ignore faces with low confidence
-                if box_confidence < 90:
+                if box_confidence < 80:
                     self.get_logger().info(f"Ignoring face {i} with low confidence: {box_confidence}")
                     continue
                 msg = PersonDetection()
