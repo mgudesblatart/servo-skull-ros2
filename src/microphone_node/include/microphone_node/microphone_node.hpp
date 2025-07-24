@@ -6,7 +6,7 @@
 #include <queue>
 #include <mutex>
 #include <atomic>
-#include "microphone_node/webrtc_vad_wrapper.hpp"
+// #include "microphone_node/webrtc_vad_wrapper.hpp"
 #include <memory>
 
 class MicrophoneNode : public rclcpp::Node {
@@ -36,5 +36,5 @@ private:
     std::queue<std::vector<uint8_t>> audio_queue_;
     std::mutex queue_mutex_;
     std::atomic<bool> running_;
-    std::unique_ptr<WebrtcVad> vad_;
+    // std::unique_ptr<WebrtcVad> vad_;
 };

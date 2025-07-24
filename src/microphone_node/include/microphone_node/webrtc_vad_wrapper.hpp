@@ -15,7 +15,7 @@ public:
         handle_ = WebRtcVad_Create();
         WebRtcVad_Init(handle_);
         // 3 = most aggressive (less false positives, more false negatives)
-        WebRtcVad_set_mode(handle_, 3);
+        WebRtcVad_set_mode(handle_, 2);
     }
     ~WebrtcVad() {
         WebRtcVad_Free(handle_);
