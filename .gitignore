@@ -75,3 +75,4 @@ CLAUDE.md
 .history*
 
 *.wav
+src/stt_node/models/
