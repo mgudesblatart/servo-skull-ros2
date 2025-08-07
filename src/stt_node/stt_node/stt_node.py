@@ -17,7 +17,7 @@ BUFFER_SIZE = 48000 * BUFFER_SECONDS
 class STTNode(Node):
     def __init__(self):
         super().__init__("stt_node", enable_logger_service=True)
-        self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
+        # self.get_logger().set_level(rclpy.logging.LoggingSeverity.DEBUG)
         self.get_logger().info("Initializing STTNode...")
 
         self.subscription = self.create_subscription(
@@ -64,18 +64,22 @@ class STTNode(Node):
         self.last_result = ""
         self.output = []
         self.audio_queue = queue.Queue()
-        self.worker_thread = threading.Thread(target=self._audio_worker, daemon=True)
-        self.worker_thread.start()
+        self.worker_thread = None  # Not started by default
+
+    def start_worker(self):
+        if self.worker_thread is None:
+            self.worker_thread = threading.Thread(target=self._audio_worker, daemon=True)
+            self.worker_thread.start()
 
     def audio_callback(self, msg):
         self.get_logger().debug(f"Received audio buffer of size {len(msg.data)} bytes (queued)")
         self.audio_queue.put(bytes(msg.data))
 
-    def _audio_worker(self):
+    def _audio_worker(self, once=False):
         self.get_logger().info("Audio worker thread started")
         while True:
             try:
-                chunk = self.audio_queue.get()
+                chunk = self.audio_queue.get(timeout=0.1)
                 self.get_logger().debug("Audio worker pulled chunk from queue")
                 pcm = np.frombuffer(chunk, dtype=np.int16)
                 pcm_float = pcm.astype(np.float32) / 32768.0
@@ -96,15 +100,24 @@ class STTNode(Node):
                     msg.data = final_result if isinstance(final_result, str) else str(final_result)
                     self.transcript_publisher.publish(msg)
                     self.recognizer.reset(self.stream)
+                if once:
+                    break
+            except queue.Empty:
+                if once:
+                    break
+                continue
             except Exception as e:
                 self.get_logger().error(f"Error in audio worker: {e}")
                 import traceback
                 self.get_logger().error(traceback.format_exc())
+                if once:
+                    break
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = STTNode()
+    node.start_worker()
     node.get_logger().info('STTNode main loop starting')
     rclpy.spin(node)
     node.get_logger().info('Shutting down STTNode')
