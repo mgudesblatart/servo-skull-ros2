@@ -12,7 +12,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/testing.launch.py']),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'rclpy', 'std_msgs', 'sensor_msgs', 'servo_skull_msgs', 'person_tracking_node', 'person_sensor_node', 'servo_skull_esp32'],
     zip_safe=True,
     maintainer='murray',
     maintainer_email='mgudesblatart@gmail.com',

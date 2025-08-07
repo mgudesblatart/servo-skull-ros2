@@ -1,6 +1,10 @@
 from setuptools import find_packages, setup
+import glob
+import os
 
 package_name = "servo_skull_launch"
+
+launch_files = glob.glob(os.path.join('launch', '*.launch.py'))
 
 setup(
     name=package_name,
@@ -9,7 +13,7 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
-        ("share/" + package_name + "/launch", ["launch/test_audio_stt.launch.py"]),
+        ("share/" + package_name + "/launch", launch_files),
     ],
     install_requires=["setuptools"],
     zip_safe=True,

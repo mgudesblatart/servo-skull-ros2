@@ -25,7 +25,7 @@ setup(
     maintainer="murray",
     maintainer_email="mgudesblatart@gmail.com",
     description="ROS2 node for streaming speech-to-text using Sherpa-ONNX Zipformer.",
-    license="TODO: License declaration",
+    license="MIT",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [

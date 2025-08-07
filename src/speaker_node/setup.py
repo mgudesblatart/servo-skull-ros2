@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'person_sensor_node'
+package_name = 'speaker_node'
 
 setup(
     name=package_name,
@@ -11,16 +11,16 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
     ],
-    install_requires=['setuptools', 'rclpy', 'std_msgs', 'sensor_msgs', 'servo_skull_msgs'],
+    install_requires=['setuptools', 'numpy', 'sounddevice', 'scipy'],
     zip_safe=True,
-    maintainer='Murray Gudesblat',
+    maintainer='murray',
     maintainer_email='mgudesblatart@gmail.com',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='ROS2 node for audio playback from AudioData messages.',
+    license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'person_sensor_node = person_sensor_node.person_sensor_node:main',
+              'speaker_node = speaker_node.speaker_node:main',
         ],
     },
 )

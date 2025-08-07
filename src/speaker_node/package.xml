@@ -1,20 +1,20 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>stt_node</name>
+  <name>speaker_node</name>
   <version>0.0.0</version>
-  <description>ROS2 node for streaming speech-to-text using Sherpa-ONNX Zipformer.</description>
+  <description>ROS2 node for audio playback from AudioData messages.</description>
   <maintainer email="mgudesblatart@gmail.com">murray</maintainer>
   <license>MIT</license>
 
   <depend>rclpy</depend>
-  <depend>microphone_node</depend>
+  <depend>std_msgs</depend>
+  <depend>servo_skull_msgs</depend>
   <exec_depend>numpy</exec_depend>
-  <exec_depend>sherpa-onnx</exec_depend>
-  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>sounddevice</exec_depend>
+  <exec_depend>scipy</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
-  <test_depend>pytest-mock</test_depend>
 
   <export>
     <build_type>ament_python</build_type>
