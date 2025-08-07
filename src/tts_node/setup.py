@@ -1,6 +1,12 @@
+from glob import glob
+import os
 from setuptools import find_packages, setup
 
 package_name = 'tts_node'
+
+model_files = [
+    f for f in glob(os.path.join("models", "*.onnx")) if os.path.isfile(f)
+]
 
 setup(
     name=package_name,
@@ -10,8 +16,12 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+          (
+            f"share/{package_name}/models",
+            model_files,
+        ),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', "rclpy", "std_msgs", "servo_skull_msgs"],
     zip_safe=True,
     maintainer='murray',
     maintainer_email='mgudesblatart@gmail.com',
@@ -20,6 +30,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            "tts_node = tts_node.tts_node:main",
         ],
     },
 )

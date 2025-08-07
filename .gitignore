@@ -76,3 +76,5 @@ CLAUDE.md
 
 *.wav
 src/stt_node/models/
+*.onnx
+*.onnx.*
