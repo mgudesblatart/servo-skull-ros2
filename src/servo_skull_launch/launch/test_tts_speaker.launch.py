@@ -1,9 +1,15 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import ExecuteProcess
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'device',
+            default_value='',
+            description='Audio output device index or name for speaker_node'
+        ),
         Node(
             package="tts_node",
             executable="tts_node",
@@ -15,6 +21,7 @@ def generate_launch_description():
             executable="speaker_node",
             name="speaker_node",
             output="screen",
+            parameters=[{'device': LaunchConfiguration('device')}],
         ),
         ExecuteProcess(
             cmd=[

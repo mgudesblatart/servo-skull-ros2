@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer='murray',
     maintainer_email='mgudesblatart@gmail.com',
-    description='ROS2 node for audio playback from AudioData messages.',
+    description='ROS2 node for audio playback from AudioData messages. Accepts a "device" ROS parameter (int or string) to select audio output device.',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
@@ -24,3 +24,5 @@ setup(
         ],
     },
 )
+
+# Usage: pass --ros-args -p device:=<index_or_name> to select output device

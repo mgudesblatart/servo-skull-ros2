@@ -39,8 +39,16 @@ def find_speaker_device():
 class SpeakerNode(Node):
     def __init__(self):
         super().__init__('speaker_node')
-        self.device = find_speaker_device()
-        self.get_logger().info(f'Using audio output device: {self.device}')
+        # Add device parameter (can be int index or string name)
+        self.declare_parameter('device', 1)  # Default to 1 (user's speaker)
+        param_device = self.get_parameter('device').get_parameter_value()
+        device = param_device.integer_value if param_device.type == 2 else param_device.string_value if param_device.type == 4 else None
+        if device is not None and device != '':
+            self.device = device
+            self.get_logger().info(f"Using audio output device from ROS param: {self.device}")
+        else:
+            self.device = find_speaker_device()
+            self.get_logger().info(f'Using audio output device: {self.device}')
         self.subscription = self.create_subscription(
             AudioData,
             '/speaker/audio_output',

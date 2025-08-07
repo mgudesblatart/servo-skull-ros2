@@ -32,7 +32,7 @@ MicrophoneNode::MicrophoneNode() : Node("microphone_node"), stream_(nullptr)
     channels_ = this->declare_parameter<int>("channels", 1);
     frames_per_buffer_ = this->declare_parameter<int>("frames_per_buffer", 480 * 20);
     bit_depth_ = this->declare_parameter<int>("bit_depth", 16);
-    device_index_ = this->declare_parameter<int>("device_index", -1); // -1 = default
+    device_index_ = this->declare_parameter<int>("device_index", 0); // Default to 0 (user's mic)
 
     audio_pub_ = this->create_publisher<std_msgs::msg::UInt8MultiArray>("audio/raw", 10);
 
