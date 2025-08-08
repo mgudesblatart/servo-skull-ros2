@@ -10,12 +10,9 @@
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>servo_skull_msgs</depend>
-  <exec_depend>numpy</exec_depend>
-  <exec_depend>piper-tts</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
-  <test_depend>pytest-mock</test_depend>
 
   <export>
     <build_type>ament_python</build_type>

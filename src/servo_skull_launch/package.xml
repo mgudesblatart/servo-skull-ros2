@@ -14,8 +14,9 @@
   <exec_depend>person_sensor_node</exec_depend>
   <exec_depend>person_tracking_node</exec_depend>
   <exec_depend>servo_skull_msgs</exec_depend>
-  <exec_depend>servo_control_node</exec_depend>
+  <exec_depend>skull_control_node</exec_depend>
   <exec_depend>speaker_node</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 

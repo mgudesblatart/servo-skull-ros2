@@ -10,9 +10,6 @@
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>servo_skull_msgs</depend>
-  <exec_depend>numpy</exec_depend>
-  <exec_depend>sounddevice</exec_depend>
-  <exec_depend>scipy</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 

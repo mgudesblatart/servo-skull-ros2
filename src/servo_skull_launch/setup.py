@@ -15,7 +15,7 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch", launch_files),
     ],
-    install_requires=["setuptools"],
+    install_requires=["setuptools", "ament_index_python"],
     zip_safe=True,
     maintainer="murray",
     maintainer_email="mgudesblatart@gmail.com",
