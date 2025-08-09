@@ -20,12 +20,12 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'mic_device',
-            default_value='0',
+            default_value='-1',
             description='Audio input device index or name for microphone_node'
         ),
         DeclareLaunchArgument(
             'speaker_device',
-            default_value='1',
+            default_value='',
             description='Audio output device index or name for speaker_node'
         ),
         Node(

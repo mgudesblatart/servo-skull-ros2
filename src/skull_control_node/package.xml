@@ -14,6 +14,7 @@
   <depend>person_tracking_node</depend>
   <depend>person_sensor_node</depend>
   <depend>servo_skull_esp32</depend>
+  <depend>llama_msgs</depend>
 
   <test_depend>python3-pytest</test_depend>
   <exec_depend>ament_index_python</exec_depend>

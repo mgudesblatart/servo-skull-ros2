@@ -65,11 +65,21 @@ class STTNode(Node):
         self.output = []
         self.audio_queue = queue.Queue()
         self.worker_thread = None  # Not started by default
+        self.running = True
+        self.get_logger().info("STT Node started")
 
     def start_worker(self):
         if self.worker_thread is None:
+            self.get_logger().info("Starting worker thread")
             self.worker_thread = threading.Thread(target=self._audio_worker, daemon=True)
             self.worker_thread.start()
+        else:
+            self.get_logger().warning("Worker thread already started")
+
+    def stop_worker(self):
+        self.running = False
+        if self.worker_thread is not None:
+            self.worker_thread.join(timeout=2)
 
     def audio_callback(self, msg):
         self.get_logger().debug(f"Received audio buffer of size {len(msg.data)} bytes (queued)")
@@ -77,7 +87,7 @@ class STTNode(Node):
 
     def _audio_worker(self, once=False):
         self.get_logger().info("Audio worker thread started")
-        while True:
+        while self.running:
             try:
                 chunk = self.audio_queue.get(timeout=0.1)
                 self.get_logger().debug("Audio worker pulled chunk from queue")
@@ -89,16 +99,22 @@ class STTNode(Node):
                 self.pcm_buffer = np.array([], dtype=np.float32)  # Clear buffer after feeding
                 while self.recognizer.is_ready(self.stream):
                     self.recognizer.decode_stream(self.stream)
-                result = self.recognizer.get_result(self.stream)
-                self.get_logger().debug(f"Result content: {result}")
+                # result = self.recognizer.get_result(self.stream)
+                # self.get_logger().debug(f"Result content: {result}")
                 if self.recognizer.is_endpoint(self.stream):
                     self.get_logger().debug(f"Transcription complete")
                     final_result = self.recognizer.get_result(self.stream)
                     self.get_logger().debug(f"Final result: {final_result}")
+                    self.get_logger().debug(f"final result type: {type(final_result)}")
+                    self.get_logger().debug(f"final result dir: {final_result.__dir__}")
+                    self.get_logger().debug(f"final result str: {final_result.__str__}")
+                    self.get_logger().debug(f"Final result length: {len(str(final_result).strip())}")
                     # Publish transcript to /speech_to_text/transcript
-                    msg = String()
-                    msg.data = final_result if isinstance(final_result, str) else str(final_result)
-                    self.transcript_publisher.publish(msg)
+                    if final_result and len(str(final_result).strip()) > 0:
+                        msg = String()
+                        msg.data = final_result if isinstance(final_result, str) else str(final_result)
+                        self.get_logger().debug(f"Publishing transcript: '{msg.data}' (len={len(msg.data)})")
+                        self.transcript_publisher.publish(msg)
                     self.recognizer.reset(self.stream)
                 if once:
                     break
@@ -118,8 +134,19 @@ def main(args=None):
     rclpy.init(args=args)
     node = STTNode()
     node.start_worker()
-    node.get_logger().info('STTNode main loop starting')
-    rclpy.spin(node)
-    node.get_logger().info('Shutting down STTNode')
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        node.get_logger().info('STTNode main loop starting')
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    try:
+        node.get_logger().info('Shutting down STTNode')
+        node.stop_worker()
+        node.destroy_node()
+    finally:
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

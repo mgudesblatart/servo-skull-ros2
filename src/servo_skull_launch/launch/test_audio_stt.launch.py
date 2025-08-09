@@ -8,16 +8,16 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument(
-                'device_index',
+                'mic_device',
                 default_value='-1',
-                description='Audio input device index for microphone_node'
+                description='Audio input device index or name for microphone_node'
             ),
             Node(
                 package="microphone_node",
                 executable="microphone_node",
                 name="microphone_node",
                 output="screen",
-                parameters=[{'device_index': LaunchConfiguration('device_index')}],
+                parameters=[{'device_index': LaunchConfiguration('mic_device')}],
             ),
             Node(
                 package="stt_node",

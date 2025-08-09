@@ -40,7 +40,7 @@ class SpeakerNode(Node):
     def __init__(self):
         super().__init__('speaker_node')
         # Add device parameter (can be int index or string name)
-        self.declare_parameter('device', 1)  # Default to 1 (user's speaker)
+        self.declare_parameter('device', None)
         param_device = self.get_parameter('device').get_parameter_value()
         device = param_device.integer_value if param_device.type == 2 else param_device.string_value if param_device.type == 4 else None
         if device is not None and device != '':
