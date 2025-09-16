@@ -1,4 +1,5 @@
 from setuptools import find_packages, setup
+import glob
 
 package_name = 'skull_control_node'
 
@@ -10,7 +11,8 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/skull_control.launch.py']),
+        ('share/' + package_name + '/launch', glob.glob('launch/*.launch.py')),
+        ('share/' + package_name + '/configs', glob.glob('configs/*.yaml') + glob.glob('configs/*.gbnf')),
     ],
     install_requires=[
         'setuptools',
