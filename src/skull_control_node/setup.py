@@ -22,6 +22,7 @@ setup(
         'langchain_core',
         'langgraph',
         'ament_index_python',
+        'PyYAML',
     ],
     zip_safe=True,
     maintainer='murray',
@@ -33,6 +34,7 @@ setup(
         'console_scripts': [
              'skull_control_node = skull_control_node.skull_control_bt_node:main',
              'llm_agent_node = skull_control_node.llm_agent_node:main',
+               'llm_agent_axcl_node = skull_control_node.llm_agent_axcl_node:main',
              "test_llama = skull_control_node.test_llama:main",
              "dumb_llm_agent_node = skull_control_node.dumb_action_client_node:main",
         ],

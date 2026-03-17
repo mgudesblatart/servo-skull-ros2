@@ -1,9 +1,22 @@
 #include "microphone_node/microphone_node.hpp"
 #include <stdexcept>
 #include <iostream>
+#include <alsa/asoundlib.h>
 
 // Increase queue size to 50
 static constexpr size_t MAX_QUEUE_SIZE = 50;
+
+// Suppress verbose ALSA probe noise from PortAudio initialization.
+// Real stream open/start failures are still surfaced via explicit RCLCPP_ERROR logs.
+static void alsa_error_silencer(
+    const char * /*file*/,
+    int /*line*/,
+    const char * /*function*/,
+    int /*err*/,
+    const char * /*fmt*/,
+    ...)
+{
+}
 
 // Helper function to print all PortAudio devices
 void print_portaudio_devices()
@@ -35,6 +48,8 @@ MicrophoneNode::MicrophoneNode() : Node("microphone_node"), stream_(nullptr)
     device_index_ = this->declare_parameter<int>("device_index", -1); // -1 = default
 
     audio_pub_ = this->create_publisher<std_msgs::msg::UInt8MultiArray>("audio/raw", 10);
+    auto ready_qos = rclcpp::QoS(1).reliable().transient_local();
+    ready_pub_ = this->create_publisher<std_msgs::msg::Bool>("/microphone_node/ready", ready_qos);
 
     if (!init_audio())
     {
@@ -50,6 +65,8 @@ MicrophoneNode::~MicrophoneNode()
 
 bool MicrophoneNode::init_audio()
 {
+    snd_lib_error_set_handler(alsa_error_silencer);
+
     PaError err = Pa_Initialize();
     if (err != paNoError)
     {
@@ -89,9 +106,24 @@ bool MicrophoneNode::init_audio()
         RCLCPP_ERROR(this->get_logger(), "Selected device index %d is invalid.", device_index_);
         return false;
     }
+
+    const PaDeviceInfo *selected_device_info = Pa_GetDeviceInfo(input_params.device);
+    if (selected_device_info == nullptr)
+    {
+        RCLCPP_ERROR(this->get_logger(), "Failed to query selected input device info for index %d.", input_params.device);
+        return false;
+    }
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Using input device %d: %s (%d input channels)",
+        input_params.device,
+        selected_device_info->name,
+        selected_device_info->maxInputChannels);
+
     input_params.channelCount = channels_;
     input_params.sampleFormat = paInt16;
-    input_params.suggestedLatency = Pa_GetDeviceInfo(input_params.device)->defaultLowInputLatency;
+    input_params.suggestedLatency = selected_device_info->defaultLowInputLatency;
     input_params.hostApiSpecificStreamInfo = nullptr;
 
     running_ = true;
@@ -116,6 +148,19 @@ bool MicrophoneNode::init_audio()
         RCLCPP_ERROR(this->get_logger(), "Failed to start audio stream: %s", Pa_GetErrorText(err));
         return false;
     }
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Audio input stream started at %d Hz, %d channel(s), %d frames/buffer",
+        sample_rate_,
+        channels_,
+        frames_per_buffer_);
+
+    auto ready_msg = std_msgs::msg::Bool();
+    ready_msg.data = true;
+    ready_pub_->publish(ready_msg);
+    RCLCPP_INFO(this->get_logger(), "Published readiness: /microphone_node/ready = true");
+
     audio_buffer_.resize(frames_per_buffer_ * channels_ * (bit_depth_ / 8));
     return true;
 }
@@ -155,6 +200,7 @@ void MicrophoneNode::close_audio()
         stream_ = nullptr;
     }
     Pa_Terminate();
+    snd_lib_error_set_handler(nullptr);
 }
 
 int main(int argc, char *argv[])

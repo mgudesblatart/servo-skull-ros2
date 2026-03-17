@@ -1,6 +1,8 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import UInt8MultiArray, String
+from std_msgs.msg import Bool
 import numpy as np
 import sherpa_onnx
 import os
@@ -27,6 +29,12 @@ class STTNode(Node):
         self.transcript_publisher = self.create_publisher(
             String, "/speech_to_text/transcript", 10
         )
+        ready_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.ready_publisher = self.create_publisher(Bool, '/stt_node/ready', ready_qos)
         encoder = os.path.join(
             MODEL_DIR,"encoder-epoch-99-avg-1.int8.onnx"
         )
@@ -73,6 +81,10 @@ class STTNode(Node):
             self.get_logger().info("Starting worker thread")
             self.worker_thread = threading.Thread(target=self._audio_worker, daemon=True)
             self.worker_thread.start()
+            ready_msg = Bool()
+            ready_msg.data = True
+            self.ready_publisher.publish(ready_msg)
+            self.get_logger().info('Published readiness: /stt_node/ready = true')
         else:
             self.get_logger().warning("Worker thread already started")
 

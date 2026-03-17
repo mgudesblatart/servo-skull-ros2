@@ -12,6 +12,7 @@ find_package(servo_skull_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PORTAUDIO REQUIRED portaudio-2.0)
+pkg_check_modules(ALSA REQUIRED alsa)
 
 install(
   DIRECTORY include/
@@ -21,6 +22,7 @@ install(
 include_directories(
   src
   ${PORTAUDIO_INCLUDE_DIRS}
+  ${ALSA_INCLUDE_DIRS}
   # src/spl_sqrt_floor
   # src/rtc_base
   # src/rtc_base/numerics
@@ -53,7 +55,7 @@ include_directories(
 # )
 add_executable(microphone_node src/microphone_node.cpp)
 # target_sources(microphone_node PRIVATE ${WEBRTC_VAD_SRC})
-target_link_libraries(microphone_node ${PORTAUDIO_LIBRARIES})
+target_link_libraries(microphone_node ${PORTAUDIO_LIBRARIES} ${ALSA_LIBRARIES})
 ament_target_dependencies(microphone_node rclcpp servo_skull_msgs std_msgs)
 
 install(TARGETS microphone_node

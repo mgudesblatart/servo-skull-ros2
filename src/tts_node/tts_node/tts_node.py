@@ -1,6 +1,8 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import String
+from std_msgs.msg import Bool
 from servo_skull_msgs.msg import AudioData  # Updated import path
 from ament_index_python.packages import get_package_share_directory
 from piper import PiperVoice
@@ -31,6 +33,12 @@ class TTSNode(Node):
             QUEUE_SIZE
         )
         self.audio_pub = self.create_publisher(AudioData, '/speaker/audio_output', QUEUE_SIZE)
+        ready_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.ready_pub = self.create_publisher(Bool, '/tts_node/ready', ready_qos)
         self.tts_queue = queue.Queue(maxsize=100)
         self.worker_thread = threading.Thread(target=self.tts_worker, daemon=True)
         self.worker_thread.start()
@@ -39,6 +47,12 @@ class TTSNode(Node):
         except Exception as e:
             self.get_logger().error(f'Failed to load Piper model: {e}')
             self.voice = None
+
+        if self.voice is not None:
+            ready_msg = Bool()
+            ready_msg.data = True
+            self.ready_pub.publish(ready_msg)
+            self.get_logger().info('Published readiness: /tts_node/ready = true')
         self.get_logger().info('TTS Node initialized and waiting for requests.')
 
     def tts_callback(self, msg):

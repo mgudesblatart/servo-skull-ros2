@@ -1,5 +1,6 @@
 #pragma once
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/u_int8_multi_array.hpp>
 #include <portaudio.h>
 #include <vector>
@@ -23,6 +24,7 @@ private:
                            const PaStreamCallbackTimeInfo *timeInfo, PaStreamCallbackFlags statusFlags, void *userData);
 
     rclcpp::Publisher<std_msgs::msg::UInt8MultiArray>::SharedPtr audio_pub_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ready_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
 
     PaStream *stream_;

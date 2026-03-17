@@ -1,5 +1,7 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from std_msgs.msg import Bool
 from servo_skull_msgs.msg import AudioData
 import numpy as np
 import sounddevice as sd
@@ -55,6 +57,12 @@ class SpeakerNode(Node):
             self.audio_callback,
             QUEUE_SIZE
         )
+        ready_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.ready_pub = self.create_publisher(Bool, '/speaker_node/ready', ready_qos)
         # Start persistent OutputStream on init
         self.stream = sd.OutputStream(
             samplerate=PLAYBACK_SAMPLE_RATE,
@@ -69,6 +77,11 @@ class SpeakerNode(Node):
         self.audio_queue = queue.Queue(maxsize=100)
         self.playback_thread = threading.Thread(target=self.playback_worker, daemon=True)
         self.playback_thread.start()
+
+        ready_msg = Bool()
+        ready_msg.data = True
+        self.ready_pub.publish(ready_msg)
+        self.get_logger().info('Published readiness: /speaker_node/ready = true')
 
     def destroy_node(self):
         # Clean up persistent stream

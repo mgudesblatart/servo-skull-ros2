@@ -78,3 +78,7 @@ CLAUDE.md
 src/stt_node/models/
 *.onnx
 *.onnx.*
+
+# Task files
+# tasks.json
+# tasks/ 
