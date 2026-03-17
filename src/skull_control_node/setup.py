@@ -18,7 +18,6 @@ setup(
         'setuptools',
         'rclpy',
         'langchain',
-        'llama_ros',
         'langchain_core',
         'langgraph',
         'ament_index_python',
@@ -27,16 +26,13 @@ setup(
     zip_safe=True,
     maintainer='murray',
     maintainer_email='mgudesblatart@gmail.com',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='AXCL-backed LLM agent and BT-based servo skull controller for ROS2 Jazzy',
+    license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-             'skull_control_node = skull_control_node.skull_control_bt_node:main',
-             'llm_agent_node = skull_control_node.llm_agent_node:main',
-               'llm_agent_axcl_node = skull_control_node.llm_agent_axcl_node:main',
-             "test_llama = skull_control_node.test_llama:main",
-             "dumb_llm_agent_node = skull_control_node.dumb_action_client_node:main",
+            'skull_control_node = skull_control_node.skull_control_bt_node:main',
+            'llm_agent_axcl_node = skull_control_node.llm_agent_axcl_node:main',
         ],
     },
 )
