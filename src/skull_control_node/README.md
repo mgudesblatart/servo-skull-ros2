@@ -8,7 +8,11 @@ Core skull behaviour package. Contains two independent nodes: the AXCL LLM agent
 
 ### `llm_agent_axcl_node`
 
-Listens for speech transcripts, feeds them to an AXCL-hosted LLM via a persistent subprocess, parses the JSON contract response, and publishes TTS phrases. This is the "brain" of the servo skull.
+Listens for `llm_input` messages, feeds them to an AXCL-hosted LLM via a persistent subprocess, parses the JSON contract response, and publishes TTS phrases. This is the "brain" of the servo skull.
+
+Guardrails in current implementation:
+- Runtime diagnostic output from AXCL (for example KV-cache/context overflow logs) is not published to TTS.
+- For `channel=human` inputs, if the model returns no `say_phrase` call, the node forces one spoken reply from `final_output` (fallback: `Acknowledged.`).
 
 **Pipeline position:** STT → skull_control gate (`/skull_control/llm_input`) → **LLM Agent** → TTS
 
@@ -16,7 +20,7 @@ Listens for speech transcripts, feeds them to an AXCL-hosted LLM via a persisten
 
 | Direction | Topic | Type | Notes |
 |---|---|---|---|
-| Subscribe | `/skull_control/llm_input` | `std_msgs/String` | Gated transcript input forwarded by `skull_control_node` |
+| Subscribe | `/skull_control/llm_input` | `std_msgs/String` | Gated input from `skull_control_node` (JSON envelope or plain-text fallback) |
 | Subscribe | `/llm_agent_axcl/control` | `std_msgs/String` | `CANCEL` / `HALT` / `STOP` interrupt control |
 | Publish | `/text_to_speech/text_input` | `std_msgs/String` | Phrase to speak aloud |
 
@@ -49,7 +53,7 @@ BT-based servo controller. Subscribes to tracked person data, selects a target u
 | Subscribe (optional) | `/skull_control/test_event` | `std_msgs/String` | Test-only FSM forcing hook (disabled by default) |
 | Publish | `skull_control/pan_tilt_cmd` | `geometry_msgs/Point` | Pan (x) / tilt (y) in [0–500] range |
 | Publish | `/skull_control/state_transition` | `std_msgs/String` | Transition trace JSON (`from`, `to`, `event`, `ts`) |
-| Publish | `/skull_control/llm_input` | `std_msgs/String` | Gated transcript stream for LLM agent |
+| Publish | `/skull_control/llm_input` | `std_msgs/String` | Event-aware input envelope stream for LLM agent |
 | Publish | `/tts_node/control` | `std_msgs/String` | Interrupt control (`STOP`) |
 | Publish | `/speaker_node/control` | `std_msgs/String` | Interrupt control (`STOP`) |
 | Publish | `/llm_agent_axcl/control` | `std_msgs/String` | Interrupt control (`CANCEL`) |
@@ -106,6 +110,44 @@ The LLM is instructed to respond with exactly one JSON object per inference:
 3. Regex `{.*}` extraction + parse
 4. `json_repair` (if installed) applied to all candidates
 5. Plain text fallback — wraps raw output in a synthetic contract so the skull still speaks something
+
+---
+
+## LLM Input Envelope
+
+`skull_control_bt_node` publishes JSON strings to `/skull_control/llm_input` using this schema:
+
+```json
+{
+  "channel": "human | system | mixed",
+  "source": "stt | person_tracking | fsm | ...",
+  "type": "transcript | event",
+  "event": "human_transcript | person_detected | ...",
+  "urgency": "low | medium | high",
+  "text": "optional natural language text",
+  "payload": {"optional": "metadata"},
+  "ts": 1742313600.123
+}
+```
+
+Current producers:
+- Human speech: `channel=human`, `type=transcript`, `source=stt`, `urgency=medium`.
+- System events: `channel=system`, `type=event` for:
+  - `person_detected`
+  - `no_motion_timeout`
+  - `no_speech_timeout`
+  - `low_interest_timeout`
+  - `interrupt_detected`
+  - `tts_done`
+
+Anti-spam behavior in BT node:
+- Per-event cooldown (5-12s depending on event).
+- Additional suppression for identical `event + payload` repeats.
+
+Speech-loop suppression in BT node:
+- Short post-TTS blanket suppression window for STT (`POST_TTS_ECHO_SUPPRESS_SEC`).
+- Content-aware echo filtering: drops STT transcripts that closely match the most recent TTS phrase.
+- Interrupt tokens (`HALT` / `HOLD`) bypass suppression.
 
 ---
 
@@ -185,3 +227,4 @@ See [`servo_skull_launch`](../servo_skull_launch/README.md) for the full orchest
 - `axcl_runtime_client.py` uses a `threading.Lock` on `generate()` calls; only one prompt can be in-flight at a time.
 - If the runtime process dies mid-session, `generate()` will raise a `RuntimeError`. The node logs the error and continues listening; a restart is required to re-establish the subprocess.
 - The tokenizer service (`qwen2.5_tokenizer_uid.py`) must be running before the AXCL runtime starts. The launch file can optionally start it via `start_tokenizer:=true`.
+- If AXCL runtime output indicates context-full / KV-cache overflow, `llm_agent_axcl_node` suppresses publish and attempts a runtime reset.

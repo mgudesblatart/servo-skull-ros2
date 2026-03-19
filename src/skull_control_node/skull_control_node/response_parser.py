@@ -5,6 +5,11 @@ from typing import Any
 
 REQUIRED_KEYS = {"thoughts", "tool_calls", "final_output"}
 RUNTIME_LOG_LINE_PATTERN = re.compile(r"^\[[A-Z]\]\[")
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_PATTERN.sub("", text)
 
 
 def _strip_markdown_fences(raw_text: str) -> str:
@@ -66,7 +71,7 @@ def _extract_plaintext_reply(raw_text: str) -> str:
     lines: list[str] = []
 
     for line in raw_text.splitlines():
-        stripped = line.strip()
+        stripped = _strip_ansi(line).strip()
         if not stripped:
             continue
         if stripped == "prompt >>":

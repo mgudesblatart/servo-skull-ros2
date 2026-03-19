@@ -81,4 +81,5 @@ src/stt_node/models/
 
 # Task files
 # tasks.json
-# tasks/ 
+# tasks/
+.claude/

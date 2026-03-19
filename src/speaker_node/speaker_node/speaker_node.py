@@ -114,6 +114,8 @@ class SpeakerNode(Node):
             self.stream.start()
         except Exception as e:
             self.get_logger().warning(f'Failed to abort/restart stream on {command}: {e}')
+        # Queue is drained at this point; clear stop flag so the next utterance starts cleanly.
+        self.stop_requested.clear()
         self.get_logger().warning(f'Received speaker control {command}; dropped {dropped} queued chunk(s).')
 
     def destroy_node(self):
@@ -155,10 +157,6 @@ class SpeakerNode(Node):
         self._write_silence(0.2)
         while True:
             msg = self.audio_queue.get()
-            if self.stop_requested.is_set():
-                self.stop_requested.clear()
-                self.audio_queue.task_done()
-                continue
             audio_np = np.array(msg.data, dtype=np.int16)
             print(f"[SpeakerNode] Got chunk: shape={audio_np.shape}, min={audio_np.min() if audio_np.size else 'n/a'}, max={audio_np.max() if audio_np.size else 'n/a'}, is_last_chunk={getattr(msg, 'is_last_chunk', False)}")
             if audio_np.size == 0:

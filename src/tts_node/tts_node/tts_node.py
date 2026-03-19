@@ -127,6 +127,9 @@ class TTSNode(Node):
                     continue
 
                 for i, chunk in enumerate(chunks_buffer):
+                    if self.stop_requested.is_set():
+                        interrupted = True
+                        break
                     audio_msg = AudioData()
                     samples = list(array.array('h', chunk.audio_int16_bytes))
                     audio_msg.data = samples
@@ -138,6 +141,11 @@ class TTSNode(Node):
                     sample_rate = audio_msg.sample_rate
                     channels = audio_msg.channels
                     chunk_count += 1
+                if interrupted:
+                    self.get_logger().warning('TTS publish interrupted by control command.')
+                    self.stop_requested.clear()
+                    self.tts_queue.task_done()
+                    continue
                 if chunk_count > 0:
                     if DEBUG_WRITE_WAV:
                         wav_data = np.array(all_samples, dtype=np.int16)

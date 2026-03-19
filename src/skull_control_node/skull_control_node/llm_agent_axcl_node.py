@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import re
 import threading
@@ -16,12 +17,16 @@ from skull_control_node.response_parser import extract_say_phrase_calls, parse_r
 
 class LLMAgentAxclNode(Node):
     _RUNTIME_LOG_LINE_PATTERN = re.compile(r"^\[[A-Z]\]\[")
+    _ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
+    _VALID_CHANNELS = {"human", "system", "mixed"}
+    _VALID_URGENCIES = {"low", "medium", "high"}
 
     def __init__(self) -> None:
         super().__init__("llm_agent_axcl_node")
         self.callback_group = ReentrantCallbackGroup()
         self.cancel_requested = threading.Event()
-        self.runtime_reset_lock = threading.Lock()
+        self.request_in_flight = threading.Event()
+        self.runtime_reset_lock = threading.RLock()
 
         self.declare_parameter("config_path", "")
         self.declare_parameter("runtime_command", "")
@@ -83,6 +88,19 @@ class LLMAgentAxclNode(Node):
         self.runtime_client.start()
         self.get_logger().info("LLM Agent AXCL Node started.")
 
+    def _reset_runtime_locked(self, reason: str) -> None:
+        # Caller must hold runtime_reset_lock.
+        try:
+            self.runtime_client.close()
+        except Exception as error:
+            self.get_logger().warning(f"Runtime close during {reason} raised: {error}")
+
+        try:
+            self.runtime_client.start()
+            self.get_logger().info(f"AXCL runtime restarted ({reason}).")
+        except Exception as error:
+            self.get_logger().error(f"Failed to restart AXCL runtime ({reason}): {error}")
+
     def control_callback(self, msg: String) -> None:
         command = msg.data.strip().upper()
         if command not in {"CANCEL", "HALT", "STOP"}:
@@ -91,11 +109,14 @@ class LLMAgentAxclNode(Node):
         self.cancel_requested.set()
         self.get_logger().warning(f"Received LLM control command: {command}. Cancelling active request.")
 
+        if not self.request_in_flight.is_set():
+            self.get_logger().info("No active LLM request; skipping runtime reset.")
+            self.cancel_requested.clear()
+            return
+
         with self.runtime_reset_lock:
-            try:
-                self.runtime_client.close()
-            except Exception as error:
-                self.get_logger().warning(f"Runtime close during cancel raised: {error}")
+            self._reset_runtime_locked(reason=f"control_{command.lower()}")
+            self.cancel_requested.clear()
 
     def _param_str(self, name: str) -> str:
         value = self.get_parameter(name).value
@@ -152,10 +173,91 @@ class LLMAgentAxclNode(Node):
         compact_system_prompt = to_single_line(self.system_prompt)
         return f"System prompt: {compact_system_prompt} User request: {compact_user_prompt} {json_contract}"
 
+    def _parse_input_envelope(self, raw_input: str):
+        try:
+            data = json.loads(raw_input)
+        except json.JSONDecodeError:
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        channel = data.get("channel")
+        source = data.get("source")
+        msg_type = data.get("type")
+        urgency = data.get("urgency")
+        ts = data.get("ts")
+
+        if channel not in self._VALID_CHANNELS:
+            return None
+        if not isinstance(source, str) or not source.strip():
+            return None
+        if not isinstance(msg_type, str) or not msg_type.strip():
+            return None
+        if urgency not in self._VALID_URGENCIES:
+            return None
+        if not isinstance(ts, (int, float)):
+            return None
+
+        envelope = {
+            "channel": channel,
+            "source": source.strip(),
+            "type": msg_type.strip(),
+            "event": str(data.get("event", "") or "").strip(),
+            "urgency": urgency,
+            "ts": float(ts),
+            "text": "",
+            "payload": {},
+        }
+
+        text = data.get("text")
+        if isinstance(text, str):
+            envelope["text"] = text.strip()
+
+        payload = data.get("payload")
+        if isinstance(payload, dict):
+            envelope["payload"] = payload
+
+        return envelope
+
+    def _build_runtime_prompt_from_envelope(self, envelope: dict) -> str:
+        def to_single_line(text: str) -> str:
+            return " ".join(text.replace("\r", "\n").split())
+
+        json_contract = (
+            "Return exactly one JSON object and nothing else. "
+            "Required keys: thoughts (string), tool_calls (array), final_output (string). "
+            "If speaking is appropriate, include tool_calls like "
+            "[{\"say_phrase\": {\"msg\": \"...\"}}]."
+        )
+
+        summary_parts = [
+            f"channel={envelope['channel']}",
+            f"source={envelope['source']}",
+            f"type={envelope['type']}",
+            f"event={envelope['event'] or 'none'}",
+            f"urgency={envelope['urgency']}",
+            f"ts={envelope['ts']:.3f}",
+        ]
+        content_parts = ["Structured input envelope: " + ", ".join(summary_parts)]
+        if envelope["text"]:
+            content_parts.append(f"text={to_single_line(envelope['text'])}")
+        if envelope["payload"]:
+            compact_payload = json.dumps(envelope["payload"], sort_keys=True, separators=(",", ":"))
+            content_parts.append(f"payload={compact_payload}")
+
+        body = " ".join(content_parts)
+
+        if not self.inline_system_prompt or not self.system_prompt:
+            return f"{body} {json_contract}"
+
+        compact_system_prompt = to_single_line(self.system_prompt)
+        return f"System prompt: {compact_system_prompt} {body} {json_contract}"
+
     def _clean_runtime_output_for_logs(self, raw_output: str) -> str:
         lines: list[str] = []
         for line in raw_output.splitlines():
-            stripped = line.strip()
+            stripped = self._ANSI_ESCAPE_PATTERN.sub("", line).strip()
             if not stripped:
                 continue
             if self._RUNTIME_LOG_LINE_PATTERN.match(stripped):
@@ -163,22 +265,52 @@ class LLMAgentAxclNode(Node):
             lines.append(stripped)
         return "\n".join(lines)
 
+    def _has_runtime_error(self, raw_output: str) -> bool:
+        normalized = self._ANSI_ESCAPE_PATTERN.sub("", raw_output).lower()
+        return (
+            "setkvcache failed" in normalized
+            or "context may be full" in normalized
+            or "precompute_len" in normalized and "prefill_max_kv_cache" in normalized
+        )
+
+    def _runtime_context_full(self, raw_output: str) -> bool:
+        normalized = self._ANSI_ESCAPE_PATTERN.sub("", raw_output).lower()
+        return "context may be full" in normalized
+
     def prompt_callback(self, msg: String) -> None:
-        user_prompt = msg.data.strip()
-        if not user_prompt:
+        raw_input = msg.data.strip()
+        if not raw_input:
             self.get_logger().warning("Received empty transcript; ignoring.")
             return
 
-        self.cancel_requested.clear()
-
-        self.get_logger().info(f"Received prompt: {user_prompt}")
+        envelope = self._parse_input_envelope(raw_input)
+        if envelope is None:
+            self.get_logger().info(f"Received plain-text llm_input (fallback): {raw_input}")
+        else:
+            self.get_logger().info(
+                "Received llm_input envelope "
+                f"channel={envelope['channel']} type={envelope['type']} "
+                f"event={envelope['event'] or 'none'} source={envelope['source']}"
+            )
 
         try:
-            runtime_prompt = self._build_runtime_prompt(user_prompt)
-            raw_output = self.runtime_client.generate(runtime_prompt)
+            self.request_in_flight.set()
+            with self.runtime_reset_lock:
+                if envelope is None:
+                    runtime_prompt = self._build_runtime_prompt(raw_input)
+                else:
+                    runtime_prompt = self._build_runtime_prompt_from_envelope(envelope)
+                raw_output = self.runtime_client.generate(runtime_prompt)
             cleaned_output = self._clean_runtime_output_for_logs(raw_output)
             self.get_logger().debug(f"Raw runtime output: {raw_output}")
             self.get_logger().info(f"Model output: {cleaned_output or '<empty>'}")
+
+            if self._has_runtime_error(raw_output):
+                self.get_logger().warning("Runtime diagnostics detected in model output; suppressing response publish.")
+                if self._runtime_context_full(raw_output):
+                    with self.runtime_reset_lock:
+                        self._reset_runtime_locked(reason="context_full")
+                return
 
             parsed = parse_response(raw_output)
             if parsed is None:
@@ -189,7 +321,20 @@ class LLMAgentAxclNode(Node):
                 self.get_logger().warning("LLM response was cancelled before publish; dropping output.")
                 return
 
-            for phrase in extract_say_phrase_calls(parsed):
+            phrases = extract_say_phrase_calls(parsed)
+            if envelope is not None and envelope.get("channel") == "human" and not phrases:
+                fallback_phrase = ""
+                final_output = parsed.get("final_output")
+                if isinstance(final_output, str) and final_output.strip():
+                    fallback_phrase = final_output.strip()
+                if not fallback_phrase:
+                    fallback_phrase = "Acknowledged."
+                phrases = [fallback_phrase]
+                self.get_logger().warning(
+                    "Human input returned without say_phrase; forcing one spoken reply from final_output fallback."
+                )
+
+            for phrase in phrases:
                 if self.cancel_requested.is_set():
                     self.get_logger().warning("LLM cancel received during publish loop; stopping phrase publication.")
                     break
@@ -208,17 +353,15 @@ class LLMAgentAxclNode(Node):
             else:
                 self.get_logger().error(f"Error processing prompt: {error}")
         finally:
+            # If a cancel arrived while processing and control callback did not clear it,
+            # avoid carrying stale cancel state into the next request.
+            self.request_in_flight.clear()
             if self.cancel_requested.is_set():
-                with self.runtime_reset_lock:
-                    try:
-                        self.runtime_client.start()
-                        self.get_logger().info("AXCL runtime restarted after cancel.")
-                    except Exception as error:
-                        self.get_logger().error(f"Failed to restart AXCL runtime after cancel: {error}")
                 self.cancel_requested.clear()
 
     def destroy_node(self) -> bool:
-        self.runtime_client.close()
+        with self.runtime_reset_lock:
+            self.runtime_client.close()
         return super().destroy_node()
 
 
