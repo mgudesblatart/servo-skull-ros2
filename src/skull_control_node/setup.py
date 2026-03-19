@@ -22,6 +22,7 @@ setup(
         'langgraph',
         'ament_index_python',
         'PyYAML',
+        'json-repair',
     ],
     zip_safe=True,
     maintainer='murray',

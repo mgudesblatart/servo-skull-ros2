@@ -15,9 +15,11 @@ The main launch file for normal operation. Starts all audio/speech/LLM nodes in 
 microphone_node → [wait ready] →
 speaker_node    → [wait ready] →
 tts_node        → [wait ready] →
-stt_node        → [wait ready] →
+skull_control_node + stt_node → [wait stt ready] →
 llm_agent_axcl  (via skull_control_node/llm_agent_axcl.launch.py)
 ```
+
+`skull_control_node` is started before STT readiness completes so FSM/control topics are available early in the test pipeline.
 
 Each readiness check waits up to its configured timeout (30s for mic/speaker, 45s for TTS/STT). If a stage fails to become ready, the entire launch shuts down.
 
@@ -103,6 +105,15 @@ Readiness topics:
 - `/stt_node/ready`
 
 > **Note:** `llm_agent_axcl_node` does **not** currently publish a ready topic. The AXCL launch is started after STT is ready; the runtime startup timeout is handled internally by `AxclRuntimeClient`.
+
+---
+
+## Test Hook Behavior
+
+`skull_control_node` exposes an optional test-only topic `/skull_control/test_event` for deterministic FSM forcing used by smoke scripts.
+
+- In this full test pipeline launch, `skull_control_node` is started with `enable_test_events: true`.
+- In non-test launches, `enable_test_events` remains disabled (default `false`, and explicitly set to `false` in testing launch files).
 
 ---
 

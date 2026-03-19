@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import os
 import re
+import threading
 
 import rclpy
 import yaml
-from rclpy.executors import SingleThreadedExecutor
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import String
 
@@ -17,6 +19,9 @@ class LLMAgentAxclNode(Node):
 
     def __init__(self) -> None:
         super().__init__("llm_agent_axcl_node")
+        self.callback_group = ReentrantCallbackGroup()
+        self.cancel_requested = threading.Event()
+        self.runtime_reset_lock = threading.Lock()
 
         self.declare_parameter("config_path", "")
         self.declare_parameter("runtime_command", "")
@@ -60,15 +65,37 @@ class LLMAgentAxclNode(Node):
 
         self.prompt_sub = self.create_subscription(
             String,
-            "/speech_to_text/transcript",
+            "/skull_control/llm_input",
             self.prompt_callback,
             10,
+            callback_group=self.callback_group,
+        )
+        self.control_sub = self.create_subscription(
+            String,
+            "/llm_agent_axcl/control",
+            self.control_callback,
+            10,
+            callback_group=self.callback_group,
         )
         self.tts_pub = self.create_publisher(String, "/text_to_speech/text_input", 10)
 
         self.get_logger().info("Starting AXCL runtime client...")
         self.runtime_client.start()
         self.get_logger().info("LLM Agent AXCL Node started.")
+
+    def control_callback(self, msg: String) -> None:
+        command = msg.data.strip().upper()
+        if command not in {"CANCEL", "HALT", "STOP"}:
+            return
+
+        self.cancel_requested.set()
+        self.get_logger().warning(f"Received LLM control command: {command}. Cancelling active request.")
+
+        with self.runtime_reset_lock:
+            try:
+                self.runtime_client.close()
+            except Exception as error:
+                self.get_logger().warning(f"Runtime close during cancel raised: {error}")
 
     def _param_str(self, name: str) -> str:
         value = self.get_parameter(name).value
@@ -142,6 +169,8 @@ class LLMAgentAxclNode(Node):
             self.get_logger().warning("Received empty transcript; ignoring.")
             return
 
+        self.cancel_requested.clear()
+
         self.get_logger().info(f"Received prompt: {user_prompt}")
 
         try:
@@ -156,7 +185,14 @@ class LLMAgentAxclNode(Node):
                 self.get_logger().error("Failed to parse runtime output into the expected JSON contract.")
                 return
 
+            if self.cancel_requested.is_set():
+                self.get_logger().warning("LLM response was cancelled before publish; dropping output.")
+                return
+
             for phrase in extract_say_phrase_calls(parsed):
+                if self.cancel_requested.is_set():
+                    self.get_logger().warning("LLM cancel received during publish loop; stopping phrase publication.")
+                    break
                 tts_msg = String()
                 tts_msg.data = phrase
                 self.tts_pub.publish(tts_msg)
@@ -167,7 +203,19 @@ class LLMAgentAxclNode(Node):
                 self.get_logger().info(f"Final output: {final_output}")
 
         except Exception as error:
-            self.get_logger().error(f"Error processing prompt: {error}")
+            if self.cancel_requested.is_set():
+                self.get_logger().warning(f"Prompt processing cancelled: {error}")
+            else:
+                self.get_logger().error(f"Error processing prompt: {error}")
+        finally:
+            if self.cancel_requested.is_set():
+                with self.runtime_reset_lock:
+                    try:
+                        self.runtime_client.start()
+                        self.get_logger().info("AXCL runtime restarted after cancel.")
+                    except Exception as error:
+                        self.get_logger().error(f"Failed to restart AXCL runtime after cancel: {error}")
+                self.cancel_requested.clear()
 
     def destroy_node(self) -> bool:
         self.runtime_client.close()
@@ -180,7 +228,7 @@ def main(args=None) -> None:
     executor = None
     try:
         node = LLMAgentAxclNode()
-        executor = SingleThreadedExecutor()
+        executor = MultiThreadedExecutor(num_threads=2)
         executor.add_node(node)
         executor.spin()
     except KeyboardInterrupt:

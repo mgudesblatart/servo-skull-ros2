@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/murray/.claude/**)",
+      "WebFetch(domain:docs.claude.com)",
+      "Bash(cat:*)",
+      "mcp__taskmaster-ai__get_tasks"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

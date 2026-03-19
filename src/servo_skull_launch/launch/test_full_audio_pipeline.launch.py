@@ -8,6 +8,7 @@ from launch.actions import (
     ExecuteProcess,
     LogInfo,
     EmitEvent,
+    GroupAction,
 )
 from launch.event_handlers import OnProcessStart, OnProcessExit
 from launch.events import Shutdown
@@ -110,6 +111,21 @@ def generate_launch_description():
         executable="stt_node",
         name="stt_node",
         output="screen",
+    )
+
+    skull_control_node = Node(
+        package="skull_control_node",
+        executable="skull_control_node",
+        name="skull_control_node",
+        output="screen",
+        parameters=[{'enable_test_events': True}],
+    )
+
+    stt_stage = GroupAction(
+        actions=[
+            skull_control_node,
+            stt_node,
+        ]
     )
 
     wait_mic_ready = ExecuteProcess(
@@ -234,7 +250,7 @@ def generate_launch_description():
         RegisterEventHandler(
             OnProcessExit(
                 target_action=wait_tts_ready,
-                on_exit=start_next_on_success(stt_node, 'tts_node'),
+                on_exit=start_next_on_success(stt_stage, 'tts_node'),
             )
         ),
         RegisterEventHandler(

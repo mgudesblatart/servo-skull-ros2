@@ -26,6 +26,7 @@ def generate_launch_description():
             package='skull_control_node',
             executable='skull_control_node',
             name='skull_control_node',
-            output='screen'
+            output='screen',
+            parameters=[{'enable_test_events': False}],
         ),
     ])

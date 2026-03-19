@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import Bool
+from std_msgs.msg import String
 from servo_skull_msgs.msg import AudioData
 import numpy as np
 import sounddevice as sd
@@ -41,6 +42,7 @@ def find_speaker_device():
 class SpeakerNode(Node):
     def __init__(self):
         super().__init__('speaker_node')
+        self.stop_requested = threading.Event()
         # Add device parameter (can be int index or string name)
         self.declare_parameter('device', None)
         param_device = self.get_parameter('device').get_parameter_value()
@@ -55,6 +57,12 @@ class SpeakerNode(Node):
             AudioData,
             '/speaker/audio_output',
             self.audio_callback,
+            QUEUE_SIZE
+        )
+        self.control_sub = self.create_subscription(
+            String,
+            '/speaker_node/control',
+            self.control_callback,
             QUEUE_SIZE
         )
         ready_qos = QoSProfile(
@@ -82,6 +90,31 @@ class SpeakerNode(Node):
         ready_msg.data = True
         self.ready_pub.publish(ready_msg)
         self.get_logger().info('Published readiness: /speaker_node/ready = true')
+
+    def _drain_audio_queue(self):
+        dropped = 0
+        while True:
+            try:
+                self.audio_queue.get_nowait()
+                self.audio_queue.task_done()
+                dropped += 1
+            except queue.Empty:
+                break
+        return dropped
+
+    def control_callback(self, msg: String):
+        command = msg.data.strip().upper()
+        if command not in {'STOP', 'CANCEL', 'HALT'}:
+            return
+
+        self.stop_requested.set()
+        dropped = self._drain_audio_queue()
+        try:
+            self.stream.abort()
+            self.stream.start()
+        except Exception as e:
+            self.get_logger().warning(f'Failed to abort/restart stream on {command}: {e}')
+        self.get_logger().warning(f'Received speaker control {command}; dropped {dropped} queued chunk(s).')
 
     def destroy_node(self):
         # Clean up persistent stream
@@ -122,6 +155,10 @@ class SpeakerNode(Node):
         self._write_silence(0.2)
         while True:
             msg = self.audio_queue.get()
+            if self.stop_requested.is_set():
+                self.stop_requested.clear()
+                self.audio_queue.task_done()
+                continue
             audio_np = np.array(msg.data, dtype=np.int16)
             print(f"[SpeakerNode] Got chunk: shape={audio_np.shape}, min={audio_np.min() if audio_np.size else 'n/a'}, max={audio_np.max() if audio_np.size else 'n/a'}, is_last_chunk={getattr(msg, 'is_last_chunk', False)}")
             if audio_np.size == 0:

@@ -10,13 +10,14 @@ Core skull behaviour package. Contains two independent nodes: the AXCL LLM agent
 
 Listens for speech transcripts, feeds them to an AXCL-hosted LLM via a persistent subprocess, parses the JSON contract response, and publishes TTS phrases. This is the "brain" of the servo skull.
 
-**Pipeline position:** STT → **LLM Agent** → TTS
+**Pipeline position:** STT → skull_control gate (`/skull_control/llm_input`) → **LLM Agent** → TTS
 
 **ROS interface:**
 
 | Direction | Topic | Type | Notes |
 |---|---|---|---|
-| Subscribe | `/speech_to_text/transcript` | `std_msgs/String` | User speech input |
+| Subscribe | `/skull_control/llm_input` | `std_msgs/String` | Gated transcript input forwarded by `skull_control_node` |
+| Subscribe | `/llm_agent_axcl/control` | `std_msgs/String` | `CANCEL` / `HALT` / `STOP` interrupt control |
 | Publish | `/text_to_speech/text_input` | `std_msgs/String` | Phrase to speak aloud |
 
 **Parameters** (set via config YAML; see below):
@@ -42,7 +43,22 @@ BT-based servo controller. Subscribes to tracked person data, selects a target u
 | Direction | Topic | Type | Notes |
 |---|---|---|---|
 | Subscribe | `/person_tracking/tracked_persons` | `servo_skull_msgs/TrackedPersons` | Face track data |
+| Subscribe | `/speech_to_text/transcript` | `std_msgs/String` | Raw STT input for FSM gating/interrupt detection |
+| Subscribe | `/text_to_speech/text_input` | `std_msgs/String` | Verbal-response start hook for FSM transitions |
+| Subscribe | `/speaker/audio_output` | `servo_skull_msgs/AudioData` | Uses `is_last_chunk` for `tts_done` transition |
+| Subscribe (optional) | `/skull_control/test_event` | `std_msgs/String` | Test-only FSM forcing hook (disabled by default) |
 | Publish | `skull_control/pan_tilt_cmd` | `geometry_msgs/Point` | Pan (x) / tilt (y) in [0–500] range |
+| Publish | `/skull_control/state_transition` | `std_msgs/String` | Transition trace JSON (`from`, `to`, `event`, `ts`) |
+| Publish | `/skull_control/llm_input` | `std_msgs/String` | Gated transcript stream for LLM agent |
+| Publish | `/tts_node/control` | `std_msgs/String` | Interrupt control (`STOP`) |
+| Publish | `/speaker_node/control` | `std_msgs/String` | Interrupt control (`STOP`) |
+| Publish | `/llm_agent_axcl/control` | `std_msgs/String` | Interrupt control (`CANCEL`) |
+
+**Parameters:**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `enable_test_events` | `false` | Enables `/skull_control/test_event` subscription for deterministic smoke tests |
 
 ---
 
@@ -165,7 +181,7 @@ See [`servo_skull_launch`](../servo_skull_launch/README.md) for the full orchest
 
 ## Notes
 
-- The node uses a `SingleThreadedExecutor`. The `prompt_callback` blocks the executor during inference (by design — inference is long and responses must be sequential). Don't expect other callbacks to fire mid-inference.
+- `llm_agent_axcl_node` uses a `MultiThreadedExecutor` + `ReentrantCallbackGroup` so control callbacks (`/llm_agent_axcl/control`) can cancel active requests while prompt handling is running.
 - `axcl_runtime_client.py` uses a `threading.Lock` on `generate()` calls; only one prompt can be in-flight at a time.
 - If the runtime process dies mid-session, `generate()` will raise a `RuntimeError`. The node logs the error and continues listening; a restart is required to re-establish the subprocess.
 - The tokenizer service (`qwen2.5_tokenizer_uid.py`) must be running before the AXCL runtime starts. The launch file can optionally start it via `start_tokenizer:=true`.

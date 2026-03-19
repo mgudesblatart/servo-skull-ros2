@@ -37,7 +37,8 @@ def generate_launch_description():
             package='skull_control_node',
             executable='skull_control_node',
             name='skull_control_node',
-            output='screen'
+            output='screen',
+            parameters=[{'enable_test_events': False}],
         ),
         # Example: add speaker_node and microphone_node with device params if needed
         # Node(
