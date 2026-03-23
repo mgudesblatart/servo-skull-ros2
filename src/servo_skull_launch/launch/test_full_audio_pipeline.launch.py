@@ -14,6 +14,7 @@ from launch.event_handlers import OnProcessStart, OnProcessExit
 from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration, EnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.conditions import IfCondition
 from ament_index_python.packages import get_package_share_directory
 import os
 
@@ -145,6 +146,20 @@ def generate_launch_description():
         output='log',
     )
 
+    axllm_native_backend = ExecuteProcess(
+        cmd=[
+            'bash',
+            LaunchConfiguration('axllm_startup_script'),
+            LaunchConfiguration('axllm_model_dir'),
+            LaunchConfiguration('axllm_port'),
+            LaunchConfiguration('axllm_bin'),
+            LaunchConfiguration('axllm_config_path'),
+        ],
+        output='screen',
+        emulate_tty=True,
+        condition=IfCondition(LaunchConfiguration('start_axllm_native_backend')),
+    )
+
     def start_next_on_success(next_action, stage_name: str):
         def _handler(event, _context):
             if event.returncode == 0:
@@ -209,6 +224,36 @@ def generate_launch_description():
             default_value='',
             description='Optional AXCL inline_system_prompt override. Empty uses AXCL config value.'
         ),
+        DeclareLaunchArgument(
+            'start_axllm_native_backend',
+            default_value='false',
+            description='Whether to start native axllm serve with preflight inside this launch.',
+        ),
+        DeclareLaunchArgument(
+            'axllm_startup_script',
+            default_value='/home/murray/projects/servo-skull/scripts/start_axllm_native_serve.sh',
+            description='Startup wrapper script that runs tokenizer preflight then starts axllm serve.',
+        ),
+        DeclareLaunchArgument(
+            'axllm_model_dir',
+            default_value='/home/murray/models/Qwen2.5-1.5B-Instruct',
+            description='Model directory used by native axllm serve.',
+        ),
+        DeclareLaunchArgument(
+            'axllm_port',
+            default_value='8011',
+            description='Port used by native axllm serve.',
+        ),
+        DeclareLaunchArgument(
+            'axllm_bin',
+            default_value='/home/murray/projects/ax-llm/build_native/axllm',
+            description='Path to native axllm binary.',
+        ),
+        DeclareLaunchArgument(
+            'axllm_config_path',
+            default_value='',
+            description='Optional config.json override for startup script. Empty uses <model_dir>/config.json.',
+        ),
 
         # Ordered startup chain:
         # 1) microphone -> wait mic ready
@@ -262,7 +307,7 @@ def generate_launch_description():
         RegisterEventHandler(
             OnProcessExit(
                 target_action=wait_stt_ready,
-                on_exit=start_next_on_success(axcl_launch, 'stt_node'),
+                on_exit=start_next_on_success(GroupAction(actions=[axllm_native_backend, axcl_launch]), 'stt_node'),
             )
         ),
     ])

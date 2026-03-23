@@ -52,6 +52,36 @@ ros2 launch skull_control_node llm_agent_axcl.launch.py start_tokenizer:=false
 ros2 launch skull_control_node llm_agent_axcl.launch.py start_tokenizer:=true inline_system_prompt:=true
 ```
 
+```shell
+# AXLLM native backend preflight (guards against HTTP tokenizer URL mismatch)
+bash /home/murray/projects/servo-skull/scripts/axllm_native_tokenizer_preflight.sh
+
+# AXLLM native backend startup helper (runs preflight, then starts axllm serve)
+bash /home/murray/projects/servo-skull/scripts/start_axllm_native_serve.sh
+
+# AXLLM native backend launch (recommended for OpenAI-compatible /v1 API)
+source /opt/ros/jazzy/setup.bash &&
+source ~/projects/venv-servo-skull/bin/activate &&
+source ./install/setup.bash &&
+ros2 launch servo_skull_launch axllm_native_backend.launch.py
+
+# Optional overrides
+ros2 launch servo_skull_launch axllm_native_backend.launch.py \
+  model_dir:=/home/murray/models/Qwen2.5-1.5B-Instruct \
+  port:=8011 \
+  axllm_bin:=/home/murray/projects/ax-llm/build_native/axllm
+```
+
+```shell
+# One-time tokenizer export for native axllm (if tokenizer.txt missing)
+cd /home/murray/projects/ax-llm/third_party/tokenizer.axera/tests &&
+python3 convert_tokenizer.py \
+  --tokenizer_path /home/murray/models/Qwen2.5-1.5B-Instruct/qwen2.5_tokenizer \
+  --dst_path /home/murray/models/Qwen2.5-1.5B-Instruct/tokenizer.txt
+
+# Then set config url_tokenizer_model to tokenizer.txt (not http://...)
+```
+
 ## LLM Backend Selection
 
 The skull defaults to **AXCL** (AX650 accelerator) for inference via `llm_agent_axcl_node`.
@@ -71,6 +101,11 @@ Alternative backends (e.g. llama.ros with CPU/GPU) can be swapped by editing `sr
 ```shell
 # Terminal 1: Launch full test pipeline
 ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py mic_device:=0 speaker_device:=1
+
+# Optional: same pipeline + native AXLLM serve (preflight + serve auto-start)
+ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
+  mic_device:=0 speaker_device:=1 \
+  start_axllm_native_backend:=true
 
 # Terminal 2: Monitor gated LLM input
 ros2 topic echo /skull_control/llm_input
