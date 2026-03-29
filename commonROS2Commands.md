@@ -10,8 +10,7 @@ ros2 launch skull_control_node skull_control.launch.py
 ros2 launch skull_control_node test_llama.launch.py prompt:="good evening"
 ```
 ```shell
-ros2 run skull_control_node llm_agent_node
-ros2 run skull_control_node llm_agent_axcl_node --ros-args -p config_path:=/mnt/d/Projects/servo-skull-rpi/src/skull_control_node/configs/axcl_servo_skull.yaml
+ros2 run skull_control_node llm_agent_http_node --ros-args -p config_path:=/home/murray/projects/servo-skull/src/skull_control_node/configs/http_servo_skull.yaml
 ```
 ```shell
 ps aux | grep ros2
@@ -36,20 +35,15 @@ source ./install/setup.bash
 ```
 
 ```shell
-# custom AXCL runtime launcher (editable script)
-/home/murray/projects/servo-skull/scripts/run_qwen2_5_axcl_custom.sh
-
-# AXCL node launch (recommended): one-time startup system prompt via runtime script
-# (uses axcl_servo_skull.yaml system_prompt when inline_system_prompt: false)
-# NOTE: If SYSTEM_PROMPT is already exported in your shell, it overrides YAML.
-
+# HTTP agent launch (default)
 source /opt/ros/jazzy/setup.bash &&
 source ~/projects/venv-servo-skull/bin/activate &&
 source ./install/setup.bash &&
-ros2 launch skull_control_node llm_agent_axcl.launch.py start_tokenizer:=false
+ros2 launch skull_control_node skull_control.launch.py
 
-# Optional debug/override only: force per-turn prompt prepend
-ros2 launch skull_control_node llm_agent_axcl.launch.py start_tokenizer:=true inline_system_prompt:=true
+# HTTP agent launch with explicit config override
+ros2 launch skull_control_node llm_agent_http.launch.py \
+  config_path:=/home/murray/projects/servo-skull/src/skull_control_node/configs/http_servo_skull.yaml
 ```
 
 ```shell
@@ -67,34 +61,25 @@ ros2 launch servo_skull_launch axllm_native_backend.launch.py
 
 # Optional overrides
 ros2 launch servo_skull_launch axllm_native_backend.launch.py \
-  model_dir:=/home/murray/models/Qwen2.5-1.5B-Instruct \
-  port:=8011 \
+  model_dir:=/home/murray/models/Qwen3-1.7B \
+  port:=8081 \
   axllm_bin:=/home/murray/projects/ax-llm/build_native/axllm
 ```
 
 ```shell
-# One-time tokenizer export for native axllm (if tokenizer.txt missing)
-cd /home/murray/projects/ax-llm/third_party/tokenizer.axera/tests &&
-python3 convert_tokenizer.py \
-  --tokenizer_path /home/murray/models/Qwen2.5-1.5B-Instruct/qwen2.5_tokenizer \
-  --dst_path /home/murray/models/Qwen2.5-1.5B-Instruct/tokenizer.txt
-
-# Then set config url_tokenizer_model to tokenizer.txt (not http://...)
+# Startup helper supports flags (no positional args)
+bash /home/murray/projects/servo-skull/scripts/start_axllm_native_serve.sh \
+  --model-dir /home/murray/models/Qwen3-1.7B \
+  --port 8081 \
+  --axllm-bin /home/murray/projects/ax-llm/build_native/axllm
 ```
 
 ## LLM Backend Selection
 
-The skull defaults to **AXCL** (AX650 accelerator) for inference via `llm_agent_axcl_node`.
-- **Config File**: `src/skull_control_node/configs/axcl_servo_skull.yaml`
-- **Model Format**: `.axmodel` (AXERA proprietary, aarch64-compatible)
-- **Model Location**: Place `.axmodel` files in `~/models/` or project-relative path and pass via launch arg:
-  ```shell
-  ros2 launch skull_control_node llm_agent_axcl.launch.py \
-    runtime_command:=/path/to/main_axcl_aarch64 \
-    runtime_cwd:=/path/to/model/dir
-  ```
-
-Alternative backends (e.g. llama.ros with CPU/GPU) can be swapped by editing `src/skull_control_node/launch/skull_control.launch.py` to load a different agent node.
+The skull defaults to the HTTP-backed agent `llm_agent_http_node`.
+- **Config File**: `src/skull_control_node/configs/http_servo_skull.yaml`
+- **Server API**: OpenAI-compatible `/v1/chat/completions` (from `axllm serve`)
+- **Recommended launch**: run the native backend and the skull control launch together.
 
 ## Integration Test: STT → skull_control gate → LLM → TTS
 
@@ -104,7 +89,6 @@ ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py mic_device:=0 
 
 # Optional: same pipeline + native AXLLM serve (preflight + serve auto-start)
 ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
-  mic_device:=0 speaker_device:=1 \
   start_axllm_native_backend:=true
 
 # Terminal 2: Monitor gated LLM input
@@ -139,12 +123,30 @@ Notes:
 - **Graceful error handling**: Publish garbled input (e.g. invalid JSON) to verify the response_parser fallback chain works and no crash occurs
 - **Latency measurement**: Compare timestamp from STT publish → `/skull_control/llm_input` → `/text_to_speech/text_input` to establish baseline performance
 - **Full pipeline**: `ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py` (if audio hardware available)
+-
 
-# notes/scratchpad
+## Evaluate AXLLM Model Usage:
 
-        // "ANTHROPIC_BASE_URL": "http://192.168.68.68:11434",
-        "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
-        "ANTHROPIC_API_KEY": "sk-no-need"
-        // "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "8192",
-        // "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        // "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
+Run against another endpoint:
+/home/murray/projects/venv-servo-skull/bin/python /home/murray/projects/servo-skull/scripts/evaluate_axllm_server.py
+Run only one or two cases:
+```shell
+/home/murray/projects/venv-servo-skull/bin/python /home/murray/projects/servo-skull/scripts/evaluate_axllm_server.py \
+  --base-url http://127.0.0.1:8082 \
+  --model AXERA-TECH/Qwen3-1.7B
+```
+Use a different prompt file:
+```shell
+/home/murray/projects/venv-servo-skull/bin/python /home/murray/projects/servo-skull/scripts/evaluate_axllm_server.py \
+  --system-prompt-file /path/to/prompt.txt
+```
+Run a subset of cases:
+```shell
+/home/murray/projects/venv-servo-skull/bin/python /home/murray/projects/servo-skull/scripts/evaluate_axllm_server.py \
+  --only greeting,personality
+```
+Machine-readable output:
+```shell
+/home/murray/projects/venv-servo-skull/bin/python /home/murray/projects/servo-skull/scripts/evaluate_axllm_server.py \
+  --json
+```

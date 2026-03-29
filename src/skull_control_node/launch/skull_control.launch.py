@@ -6,16 +6,22 @@ import os
 
 
 def generate_launch_description():
-    """Default skull_control launch: starts AXCL LLM agent with the default config."""
+    """Default skull_control launch: starts HTTP LLM agent with the default config."""
+    default_http_config = os.path.join(
+        get_package_share_directory("skull_control_node"),
+        "configs",
+        "http_servo_skull.yaml",
+    )
     return LaunchDescription([
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(
                     get_package_share_directory("skull_control_node"),
                     "launch",
-                    "llm_agent_axcl.launch.py",
+                    "llm_agent_http.launch.py",
                 )
-            )
+            ),
+            launch_arguments={'config_path': default_http_config}.items(),
         )
     ])
 

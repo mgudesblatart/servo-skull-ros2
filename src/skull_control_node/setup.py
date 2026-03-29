@@ -27,13 +27,13 @@ setup(
     zip_safe=True,
     maintainer='murray',
     maintainer_email='mgudesblatart@gmail.com',
-    description='AXCL-backed LLM agent and BT-based servo skull controller for ROS2 Jazzy',
+    description='HTTP-backed LLM agent and BT-based servo skull controller for ROS2 Jazzy',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'skull_control_node = skull_control_node.skull_control_bt_node:main',
-            'llm_agent_axcl_node = skull_control_node.llm_agent_axcl_node:main',
+            'llm_agent_http_node = skull_control_node.llm_agent_http_node:main',
         ],
     },
 )

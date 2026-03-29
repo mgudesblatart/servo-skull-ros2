@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_DIR="${1:-/home/murray/models/Qwen2.5-1.5B-Instruct}"
+MODEL_DIR="${1:-/home/murray/models/Qwen3-1.7B}"
 CONFIG_PATH="${2:-${MODEL_DIR}/config.json}"
 
 if [[ ! -d "${MODEL_DIR}" ]]; then

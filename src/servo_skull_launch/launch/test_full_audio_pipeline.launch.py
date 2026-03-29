@@ -12,9 +12,10 @@ from launch.actions import (
 )
 from launch.event_handlers import OnProcessStart, OnProcessExit
 from launch.events import Shutdown
-from launch.substitutions import LaunchConfiguration, EnvironmentVariable
+
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration, EnvironmentVariable
 from ament_index_python.packages import get_package_share_directory
 import os
 
@@ -59,28 +60,23 @@ sys.exit(0 if ok else 1)
 
 
 def generate_launch_description():
-    default_axcl_config = os.path.join(
+    default_http_config = os.path.join(
         get_package_share_directory('skull_control_node'),
         'configs',
-        'axcl_servo_skull.yaml',
+        'http_servo_skull.yaml',
     )
 
-    axcl_launch = IncludeLaunchDescription(
+    http_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
                 get_package_share_directory('skull_control_node'),
                 'launch',
-                'llm_agent_axcl.launch.py'
+                'llm_agent_http.launch.py'
             )
         ),
         launch_arguments={
-            'config_path': LaunchConfiguration('axcl_config_path'),
-            'runtime_command': LaunchConfiguration('runtime_command'),
-            'runtime_cwd': LaunchConfiguration('runtime_cwd'),
-            'tokenizer_script': LaunchConfiguration('tokenizer_script'),
-            'tokenizer_cwd': LaunchConfiguration('tokenizer_cwd'),
-            'start_tokenizer': LaunchConfiguration('start_tokenizer'),
-            'inline_system_prompt': LaunchConfiguration('inline_system_prompt'),
+            'axllm_base_url': LaunchConfiguration('axllm_base_url'),
+            'config_path': default_http_config,
         }.items(),
     )
 
@@ -150,9 +146,13 @@ def generate_launch_description():
         cmd=[
             'bash',
             LaunchConfiguration('axllm_startup_script'),
+            '--model-dir',
             LaunchConfiguration('axllm_model_dir'),
+            '--port',
             LaunchConfiguration('axllm_port'),
+            '--axllm-bin',
             LaunchConfiguration('axllm_bin'),
+            '--config-path',
             LaunchConfiguration('axllm_config_path'),
         ],
         output='screen',
@@ -190,41 +190,6 @@ def generate_launch_description():
             description='Audio output device index or name for speaker_node'
         ),
         DeclareLaunchArgument(
-            'axcl_config_path',
-            default_value=default_axcl_config,
-            description='AXCL config path override.'
-        ),
-        DeclareLaunchArgument(
-            'runtime_command',
-            default_value='',
-            description='Optional AXCL runtime command override.'
-        ),
-        DeclareLaunchArgument(
-            'runtime_cwd',
-            default_value='',
-            description='Optional AXCL runtime working directory override.'
-        ),
-        DeclareLaunchArgument(
-            'tokenizer_script',
-            default_value='/home/murray/models/Qwen2.5-1.5B-Instruct/qwen2.5_tokenizer_uid.py',
-            description='Tokenizer service script path used by AXCL launch.'
-        ),
-        DeclareLaunchArgument(
-            'tokenizer_cwd',
-            default_value='/home/murray/models/Qwen2.5-1.5B-Instruct',
-            description='Tokenizer service working directory (must contain qwen2.5_tokenizer folder).'
-        ),
-        DeclareLaunchArgument(
-            'start_tokenizer',
-            default_value='true',
-            description='Whether to start tokenizer from AXCL launch. Defaults to true for convenience.'
-        ),
-        DeclareLaunchArgument(
-            'inline_system_prompt',
-            default_value='',
-            description='Optional AXCL inline_system_prompt override. Empty uses AXCL config value.'
-        ),
-        DeclareLaunchArgument(
             'start_axllm_native_backend',
             default_value='false',
             description='Whether to start native axllm serve with preflight inside this launch.',
@@ -236,12 +201,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'axllm_model_dir',
-            default_value='/home/murray/models/Qwen2.5-1.5B-Instruct',
+            default_value='/home/murray/models/Qwen3-1.7B',
             description='Model directory used by native axllm serve.',
         ),
         DeclareLaunchArgument(
             'axllm_port',
-            default_value='8011',
+            default_value='8081',
             description='Port used by native axllm serve.',
         ),
         DeclareLaunchArgument(
@@ -254,13 +219,18 @@ def generate_launch_description():
             default_value='',
             description='Optional config.json override for startup script. Empty uses <model_dir>/config.json.',
         ),
+        DeclareLaunchArgument(
+            'axllm_base_url',
+            default_value='http://127.0.0.1:8081',
+            description='axllm HTTP server URL used by llm_agent_http_node.',
+        ),
 
         # Ordered startup chain:
         # 1) microphone -> wait mic ready
         # 2) speaker -> wait speaker ready
         # 3) tts -> wait tts ready
         # 4) stt -> wait stt ready
-        # 5) AXCL LLM agent
+        # 5) HTTP LLM agent
         microphone_node,
         RegisterEventHandler(
             OnProcessStart(
@@ -307,7 +277,7 @@ def generate_launch_description():
         RegisterEventHandler(
             OnProcessExit(
                 target_action=wait_stt_ready,
-                on_exit=start_next_on_success(GroupAction(actions=[axllm_native_backend, axcl_launch]), 'stt_node'),
+                on_exit=start_next_on_success(GroupAction(actions=[axllm_native_backend, http_launch]), 'stt_node'),
             )
         ),
     ])

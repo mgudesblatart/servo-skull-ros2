@@ -1,13 +1,14 @@
 """
 response_parser.py
 
-Parses raw text output from the AXCL runtime into the expected JSON contract:
+Parses raw text output from the LLM runtime into the expected JSON contract:
 
     {
         "thoughts": "...",
-        "tool_calls": [{"say_phrase": {"msg": "..."}}],
-        "final_output": "..."
+        "tool_calls": [{"say_phrase": {"msg": "..."}}]
     }
+
+``final_output`` is optional and ignored if present.
 
 The model doesn't always return clean JSON, so we try several recovery
 strategies in order before giving up and wrapping the whole output in a
@@ -27,8 +28,8 @@ import re
 from typing import Any
 
 
-# The three keys the model is required to produce
-REQUIRED_KEYS = {"thoughts", "tool_calls", "final_output"}
+# Minimum keys the model must produce (final_output is optional/ignored)
+REQUIRED_KEYS = {"thoughts", "tool_calls"}
 
 # Used to identify and skip runtime diagnostic lines in model output
 RUNTIME_LOG_LINE_PATTERN = re.compile(r"^\[[A-Z]\]\[")
@@ -145,7 +146,6 @@ def _build_fallback_contract(raw_text: str) -> dict[str, Any] | None:
     return {
         "thoughts": "Runtime returned non-JSON text; wrapping in fallback contract.",
         "tool_calls": [{"say_phrase": {"msg": fallback_text}}],
-        "final_output": fallback_text,
     }
 
 
@@ -160,18 +160,22 @@ def parse_response(raw_text: str) -> dict[str, Any] | None:
     """
     candidates: list[str] = []
 
+    # Strip Qwen3 <think>...</think> block before any other processing
+    think_stripped = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+    working_text = think_stripped if think_stripped else raw_text
+
     # Strategy 1: strip markdown fences, try direct parse
-    stripped = _strip_markdown_fences(raw_text)
+    stripped = _strip_markdown_fences(working_text)
     if stripped:
         candidates.append(stripped)
 
     # Strategy 2: scan for a balanced JSON block
-    balanced = _extract_balanced_json_block(stripped or raw_text)
+    balanced = _extract_balanced_json_block(stripped or working_text)
     if balanced and balanced not in candidates:
         candidates.append(balanced)
 
     # Strategy 3: greedy regex {.*} (handles trailing junk after closing brace)
-    regex_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+    regex_match = re.search(r"\{.*\}", working_text, re.DOTALL)
     if regex_match:
         candidate = regex_match.group(0).strip()
         if candidate not in candidates:
@@ -194,7 +198,7 @@ def parse_response(raw_text: str) -> dict[str, Any] | None:
         repair_json = None
 
     if repair_json is not None:
-        for candidate in candidates or [raw_text]:
+        for candidate in candidates or [working_text]:
             try:
                 repaired = repair_json(candidate, return_objects=True)
             except Exception:
@@ -204,7 +208,7 @@ def parse_response(raw_text: str) -> dict[str, Any] | None:
                 return valid
 
     # Final fallback: wrap whatever the model said in a minimal valid contract
-    return _build_fallback_contract(raw_text)
+    return _build_fallback_contract(working_text)
 
 
 def extract_say_phrase_calls(parsed: dict[str, Any]) -> list[str]:

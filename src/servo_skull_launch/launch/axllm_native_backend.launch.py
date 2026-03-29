@@ -12,7 +12,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "port",
-            default_value="8011",
+            default_value="8081",
             description="Port for axllm OpenAI-compatible server",
         ),
         DeclareLaunchArgument(
@@ -29,8 +29,11 @@ def generate_launch_description():
             cmd=[
                 "bash",
                 LaunchConfiguration("startup_script"),
+                "--model-dir",
                 LaunchConfiguration("model_dir"),
+                "--port",
                 LaunchConfiguration("port"),
+                "--axllm-bin",
                 LaunchConfiguration("axllm_bin"),
             ],
             output="screen",

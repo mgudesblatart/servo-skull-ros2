@@ -21,7 +21,7 @@ Topic wiring overview:
     /skull_control/llm_input          -> gated transcripts + system events -> LLM agent
     /tts_node/control                 -> STOP command on interrupt
     /speaker_node/control             -> STOP command on interrupt
-    /llm_agent_axcl/control           -> CANCEL command on interrupt
+    /llm_agent/control                -> CANCEL command on interrupt
 """
 
 import json
@@ -61,14 +61,19 @@ NO_SPEECH_TIMEOUT_SEC = 30.0
 DISPLAY_EMOTION_TIMEOUT_SEC = 2.5
 # Safety net: if speaker goes silent mid-utterance for this long, assume done
 SPEAKING_STALL_TIMEOUT_SEC = 8.0
+# Safety net: if LLM never produces TTS while THINKING, recover FSM
+THINKING_STALL_TIMEOUT_SEC = 75.0
 
 # ---------------------------------------------------------------------------
 # Echo suppression: prevents the skull hearing its own voice as user speech
 # ---------------------------------------------------------------------------
-# Hard time-based blackout window right after TTS speech ends
-POST_TTS_ECHO_SUPPRESS_SEC = 0.6
-# How long after a TTS phrase to keep checking if incoming STT looks like it
-ECHO_TEXT_MATCH_WINDOW_SEC = 8.0
+# Hard time-based blackout window right after TTS speech ends.
+# In live runs, speaker playback can continue for several seconds after
+# tts_done bookkeeping transitions, so keep STT gated longer.
+POST_TTS_ECHO_SUPPRESS_SEC = 9.0
+# How long after a TTS phrase to keep checking if incoming STT looks like it.
+# Keep this comfortably above observed speaker tail latency.
+ECHO_TEXT_MATCH_WINDOW_SEC = 15.0
 # Jaccard similarity above this threshold = probably an echo
 ECHO_TEXT_SIMILARITY_THRESHOLD = 0.55
 
@@ -303,6 +308,12 @@ class SkullControlBTNode(Node):
             self.speaker_audio_callback,
             10,
         )
+        self.llm_status_subscription = self.create_subscription(
+            String,
+            '/llm_agent/status',
+            self.llm_status_callback,
+            10,
+        )
         # Optional: allows injecting FSM state changes via topic (useful for integration tests)
         self.test_event_subscription = None
         if self.enable_test_events:
@@ -321,7 +332,7 @@ class SkullControlBTNode(Node):
         self.llm_input_pub = self.create_publisher(String, '/skull_control/llm_input', 10)
         self.tts_control_pub = self.create_publisher(String, '/tts_node/control', 10)
         self.speaker_control_pub = self.create_publisher(String, '/speaker_node/control', 10)
-        self.llm_control_pub = self.create_publisher(String, '/llm_agent_axcl/control', 10)
+        self.llm_control_pub = self.create_publisher(String, '/llm_agent/control', 10)
 
     def _setup_behavior_tree(self):
         """Build the py_trees BT: TrackSelector -> PanTiltPublisher in a sequence."""
@@ -624,15 +635,8 @@ class SkullControlBTNode(Node):
             if not self._overlay_active():
                 self._transition_eye(EyeState.IDLE, event)
 
-        self._publish_system_event_to_llm(
-            source='fsm',
-            event='tts_done',
-            urgency='low',
-            payload={
-                'has_target': self.blackboard.current_target is not None,
-                'general_state': self.blackboard.general_state.value,
-            },
-        )
+        # Do not feed tts_done back into the LLM: it burns context budget and
+        # can trigger low-value follow-up generations.
 
     # -----------------------------------------------------------------------
     # ROS topic callbacks
@@ -744,6 +748,55 @@ class SkullControlBTNode(Node):
         self.blackboard.last_audio_chunk_ts = time.monotonic()
         if msg.is_last_chunk and self.blackboard.speech_state == SpeechState.SPEAKING:
             self.on_tts_done()
+
+    def llm_status_callback(self, msg: String):
+        """
+        Handle runtime/agent health notifications from llm_agent_http_node.
+
+        If the LLM fails while we're in THINKING, force a safe recovery so
+        the FSM does not remain wedged waiting for a TTS signal.
+        """
+        try:
+            status_payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning(f'Ignoring malformed /llm_agent/status payload: {msg.data!r}')
+            return
+
+        status = str(status_payload.get('status', '')).strip().lower()
+        reason = str(status_payload.get('reason', '')).strip().lower()
+
+        non_fatal_statuses = {'runtime_restarted', 'cancelled'}
+        fatal_statuses = {'restart_failed', 'runtime_error_output', 'parse_error', 'error'}
+
+        if status in non_fatal_statuses:
+            return
+
+        if status not in fatal_statuses:
+            self.get_logger().warning(f'Unknown llm status received: {status_payload}')
+            return
+
+        if self.blackboard.general_state != GeneralState.THINKING and self.blackboard.llm_state != LLMState.THINKING:
+            return
+
+        event = f'llm_failure_{status}'
+        if reason:
+            event = f'{event}_{reason}'
+
+        self.get_logger().error(
+            'LLM failure while THINKING; forcing FSM recovery. '
+            f'status={status} reason={reason or "n/a"}'
+        )
+
+        self._transition_llm(LLMState.IDLE, event)
+        self._transition_speech(SpeechState.IDLE, event)
+        if self.blackboard.current_target is not None:
+            self._transition_general(GeneralState.TRACKING, event)
+            if not self._overlay_active():
+                self._transition_eye(EyeState.TRACKING, event)
+        else:
+            self._transition_general(GeneralState.IDLE, event)
+            if not self._overlay_active():
+                self._transition_eye(EyeState.IDLE, event)
 
     def test_event_callback(self, msg: String):
         """
@@ -869,6 +922,21 @@ class SkullControlBTNode(Node):
             if (now - self.blackboard.last_audio_chunk_ts) >= SPEAKING_STALL_TIMEOUT_SEC:
                 self.get_logger().warning('SPEAKING stall detected; forcing speech completion.')
                 self.on_tts_done('speaking_stall_timeout')
+
+        # Safety net: if LLM stalled and no TTS start arrives, recover from THINKING
+        if self.blackboard.general_state == GeneralState.THINKING:
+            if (now - self.blackboard.last_state_change_ts) >= THINKING_STALL_TIMEOUT_SEC:
+                self.get_logger().error('THINKING stall detected; forcing recovery from LLM wait state.')
+                self._transition_llm(LLMState.IDLE, 'thinking_stall_timeout')
+                self._transition_speech(SpeechState.IDLE, 'thinking_stall_timeout')
+                if has_target:
+                    self._transition_general(GeneralState.TRACKING, 'thinking_stall_timeout')
+                    if not self._overlay_active():
+                        self._transition_eye(EyeState.TRACKING, 'thinking_stall_timeout')
+                else:
+                    self._transition_general(GeneralState.IDLE, 'thinking_stall_timeout')
+                    if not self._overlay_active():
+                        self._transition_eye(EyeState.IDLE, 'thinking_stall_timeout')
 
     def _on_tick(self):
         """Called at 10 Hz; drive the FSM checks then tick the behavior tree."""

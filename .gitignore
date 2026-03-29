@@ -79,7 +79,8 @@ src/stt_node/models/
 *.onnx
 *.onnx.*
 
-# Task files
-# tasks.json
-# tasks/
 .claude/
+
+# Task files
+tasks.json
+tasks/ 
