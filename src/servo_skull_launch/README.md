@@ -12,11 +12,13 @@ The main launch file for normal operation. Starts all audio/speech/LLM nodes in 
 
 **Startup sequence:**
 ```
+axllm_native_backend (start script + preflight) →
 microphone_node → [wait ready] →
 speaker_node    → [wait ready] →
 tts_node        → [wait ready] →
 skull_control_node + stt_node → [wait stt ready] →
-llm_agent_axcl  (via skull_control_node/llm_agent_axcl.launch.py)
+[wait axllm /v1/models ready] →
+llm_agent_http  (via skull_control_node/llm_agent_http.launch.py)
 ```
 
 `skull_control_node` is started before STT readiness completes so FSM/control topics are available early in the test pipeline.
@@ -39,13 +41,9 @@ ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
   mic_device:=2 \
   speaker_device:=3
 
-# Override AXCL config
+# Override backend URL consumed by llm_agent_http
 ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
-  axcl_config_path:=/path/to/custom_config.yaml
-
-# Start the tokenizer service as part of this launch (default: true)
-ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
-  start_tokenizer:=false
+  axllm_base_url:=http://127.0.0.1:8081
 ```
 
 **Launch arguments:**
@@ -54,13 +52,13 @@ ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
 |---|---|---|
 | `mic_device` | `-1` | microphone_node device index (-1 = PortAudio default) |
 | `speaker_device` | `""` | speaker_node device (int index or string; empty = auto-detect USB) |
-| `axcl_config_path` | package share `axcl_servo_skull.yaml` | AXCL agent config YAML |
-| `runtime_command` | `""` | Override AXCL runtime shell command |
-| `runtime_cwd` | `""` | Override AXCL runtime working directory |
-| `tokenizer_script` | `~/models/Qwen2.5-1.5B-Instruct/qwen2.5_tokenizer_uid.py` | Tokenizer service script |
-| `tokenizer_cwd` | `~/models/Qwen2.5-1.5B-Instruct` | Tokenizer service working directory |
-| `start_tokenizer` | `true` | Whether to start the tokenizer service |
-| `inline_system_prompt` | `""` | Override `inline_system_prompt` in AXCL config (empty = use config file value) |
+| `axllm_startup_script` | `/home/murray/projects/servo-skull/scripts/start_axllm_native_serve.sh` | Native backend startup wrapper |
+| `axllm_model_dir` | `/home/murray/models/Qwen3-1.7B` | Model directory for `axllm serve` |
+| `axllm_port` | `8081` | Native backend port |
+| `axllm_bin` | `/home/murray/projects/ax-llm/build_native/axllm` | Native `axllm` binary path |
+| `axllm_config_path` | `""` | Optional `config.json` override for startup script |
+| `axllm_base_url` | `http://127.0.0.1:8081` | URL used by `llm_agent_http_node` |
+| `axllm_ready_timeout` | `60.0` | Seconds to wait for `/v1/models` readiness |
 
 ---
 
@@ -104,7 +102,7 @@ Readiness topics:
 - `/tts_node/ready`
 - `/stt_node/ready`
 
-> **Note:** `llm_agent_axcl_node` does **not** currently publish a ready topic. The AXCL launch is started after STT is ready; the runtime startup timeout is handled internally by `AxclRuntimeClient`.
+> **Note:** Backend readiness is checked explicitly via `GET <axllm_base_url>/v1/models` before `llm_agent_http` is started.
 
 ---
 

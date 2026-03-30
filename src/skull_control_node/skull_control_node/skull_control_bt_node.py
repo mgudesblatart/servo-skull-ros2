@@ -13,12 +13,13 @@ Topic wiring overview:
     /speech_to_text/transcript        -> user speech + interrupt detection
     /text_to_speech/text_input        -> watches outgoing TTS to arm echo suppression
     /speaker/audio_output             -> detects last audio chunk to end SPEAKING state
+        /speaker_node/playback_timing     -> playback duration/expected-end hints for adaptive echo suppression
     /skull_control/test_event         -> (optional) force FSM states for testing
 
   Published:
     skull_control/pan_tilt_cmd        -> servo pan/tilt setpoint
-    /skull_control/state_transition   -> JSON trace of every FSM transition
-    /skull_control/llm_input          -> gated transcripts + system events -> LLM agent
+    /skull_control/state_transition   -> typed trace of every FSM transition
+    /skull_control/llm_input          -> typed gated transcripts + system events -> LLM agent
     /tts_node/control                 -> STOP command on interrupt
     /speaker_node/control             -> STOP command on interrupt
     /llm_agent/control                -> CANCEL command on interrupt
@@ -34,7 +35,14 @@ import py_trees_ros
 import rclpy
 from geometry_msgs.msg import Point
 from rclpy.node import Node
-from servo_skull_msgs.msg import AudioData, TrackedPersons
+from servo_skull_msgs.msg import (
+    AudioData,
+    LlmInput,
+    LlmStatus,
+    PlaybackTiming,
+    StateTransition,
+    TrackedPersons,
+)
 from std_msgs.msg import String
 
 # ---------------------------------------------------------------------------
@@ -67,18 +75,19 @@ THINKING_STALL_TIMEOUT_SEC = 75.0
 # ---------------------------------------------------------------------------
 # Echo suppression: prevents the skull hearing its own voice as user speech
 # ---------------------------------------------------------------------------
-# Hard time-based blackout window right after TTS speech ends.
-# In live runs, speaker playback can continue for several seconds after
-# tts_done bookkeeping transitions, so keep STT gated longer.
-POST_TTS_ECHO_SUPPRESS_SEC = 9.0
+# Short fallback blackout window right after TTS state transitions.
+# The primary suppression window is now duration-based from speaker timing.
+POST_TTS_ECHO_SUPPRESS_SEC = 1.5
 # How long after a TTS phrase to keep checking if incoming STT looks like it.
 # Keep this comfortably above observed speaker tail latency.
 ECHO_TEXT_MATCH_WINDOW_SEC = 15.0
 # Jaccard similarity above this threshold = probably an echo
 ECHO_TEXT_SIMILARITY_THRESHOLD = 0.55
+# Tail margin added beyond predicted playback end for room echo/driver latency
+PLAYBACK_ECHO_TAIL_SEC = 0.8
 
-# Spoken words that immediately halt all activity and reset state
-INTERRUPT_TOKENS = {'HALT', 'HOLD'}
+# Spoken words that immediately halt/reset activity.
+INTERRUPT_TOKENS = {'HALT', 'HOLD', 'RESET'}
 
 # ---------------------------------------------------------------------------
 # System event debounce: rate-limits how often we spam the LLM with events
@@ -308,8 +317,14 @@ class SkullControlBTNode(Node):
             self.speaker_audio_callback,
             10,
         )
+        self.speaker_playback_timing_subscription = self.create_subscription(
+            PlaybackTiming,
+            '/speaker_node/playback_timing',
+            self.speaker_playback_timing_callback,
+            10,
+        )
         self.llm_status_subscription = self.create_subscription(
-            String,
+            LlmStatus,
             '/llm_agent/status',
             self.llm_status_callback,
             10,
@@ -328,8 +343,8 @@ class SkullControlBTNode(Node):
         """Create all outgoing topic publishers."""
         self.cmd_pub = self.create_publisher(Point, 'skull_control/pan_tilt_cmd', 10)
         # Large queue depth so fast FSM transitions don't get dropped
-        self.state_transition_pub = self.create_publisher(String, '/skull_control/state_transition', 50)
-        self.llm_input_pub = self.create_publisher(String, '/skull_control/llm_input', 10)
+        self.state_transition_pub = self.create_publisher(StateTransition, '/skull_control/state_transition', 50)
+        self.llm_input_pub = self.create_publisher(LlmInput, '/skull_control/llm_input', 10)
         self.tts_control_pub = self.create_publisher(String, '/tts_node/control', 10)
         self.speaker_control_pub = self.create_publisher(String, '/speaker_node/control', 10)
         self.llm_control_pub = self.create_publisher(String, '/llm_agent/control', 10)
@@ -345,7 +360,7 @@ class SkullControlBTNode(Node):
     # -----------------------------------------------------------------------
     # FSM transition helpers
     # Each one is a no-op if the state is already correct, logs every real change,
-    # and publishes a JSON trace to /skull_control/state_transition.
+    # and publishes a typed trace to /skull_control/state_transition.
     # -----------------------------------------------------------------------
 
     def _transition_general(self, new_state: GeneralState, event: str):
@@ -385,13 +400,13 @@ class SkullControlBTNode(Node):
         self._publish_transition('speech', old_state.value, new_state.value, event)
 
     def _publish_transition(self, subsystem: str, old_state: str, new_state: str, event: str):
-        """Emit a JSON state-transition trace to /skull_control/state_transition."""
-        msg = String()
-        ts = time.time()
-        msg.data = (
-            f'{{"ts": {ts:.3f}, "subsystem": "{subsystem}", '
-            f'"from": "{old_state}", "to": "{new_state}", "event": "{event}"}}'
-        )
+        """Emit a typed state-transition trace to /skull_control/state_transition."""
+        msg = StateTransition()
+        msg.ts = float(time.time())
+        msg.subsystem = subsystem
+        msg.from_state = old_state
+        msg.to_state = new_state
+        msg.event = event
         self.state_transition_pub.publish(msg)
 
     def _publish_control(self, publisher, command: str):
@@ -487,22 +502,16 @@ class SkullControlBTNode(Node):
         text: str = '',
         payload=None,
     ):
-        """Publish a structured JSON envelope to /skull_control/llm_input."""
-        envelope = {
-            'channel': channel,
-            'source': source,
-            'type': msg_type,
-            'event': event,
-            'urgency': urgency,
-            'ts': time.time(),
-        }
-        if text:
-            envelope['text'] = text
-        if payload:
-            envelope['payload'] = payload
-
-        msg = String()
-        msg.data = json.dumps(envelope, separators=(',', ':'))
+        """Publish a structured typed envelope to /skull_control/llm_input."""
+        msg = LlmInput()
+        msg.channel = channel
+        msg.source = source
+        msg.type = msg_type
+        msg.event = event
+        msg.urgency = urgency
+        msg.ts = float(time.time())
+        msg.text = text or ''
+        msg.payload_json = json.dumps(payload or {}, separators=(',', ':'))
         self.llm_input_pub.publish(msg)
 
     def _should_publish_system_event(self, event: str, payload, cooldown_sec: float) -> bool:
@@ -568,7 +577,7 @@ class SkullControlBTNode(Node):
         )
 
     # -----------------------------------------------------------------------
-    # Interrupt handling: stop TTS/speaker and cancel LLM on HALT/HOLD
+    # Interrupt handling: stop TTS/speaker and cancel/reset LLM on command tokens
     # -----------------------------------------------------------------------
 
     def _stop_tts(self):
@@ -577,10 +586,21 @@ class SkullControlBTNode(Node):
         self._publish_control(self.speaker_control_pub, 'STOP')
         self.get_logger().warn('Interrupt: STOP sent to TTS and speaker.')
 
+    def _reset_tts(self):
+        """Send RESET to TTS and speaker for a hard conversation reset."""
+        self._publish_control(self.tts_control_pub, 'RESET')
+        self._publish_control(self.speaker_control_pub, 'RESET')
+        self.get_logger().warn('Reset: RESET sent to TTS and speaker.')
+
     def _cancel_llm_reasoning(self):
         """Send CANCEL to the LLM agent to abort any in-flight inference."""
         self._publish_control(self.llm_control_pub, 'CANCEL')
         self.get_logger().warn('Interrupt: CANCEL sent to LLM agent.')
+
+    def _reset_llm(self):
+        """Send RESET to the LLM agent to clear state/history."""
+        self._publish_control(self.llm_control_pub, 'RESET')
+        self.get_logger().warn('Reset: RESET sent to LLM agent.')
 
     # -----------------------------------------------------------------------
     # FSM event handlers
@@ -620,8 +640,13 @@ class SkullControlBTNode(Node):
         Arms a short echo-suppression window then returns the FSM to TRACKING or
         IDLE depending on whether a person is still in frame.
         """
-        # Suppress the skull hearing its own voice immediately after speaking
-        self.blackboard.stt_echo_suppress_until_ts = time.monotonic() + POST_TTS_ECHO_SUPPRESS_SEC
+        # Keep a short fallback suppression tail after TTS state completion.
+        now = time.monotonic()
+        fallback_until = now + POST_TTS_ECHO_SUPPRESS_SEC
+        self.blackboard.stt_echo_suppress_until_ts = max(
+            self.blackboard.stt_echo_suppress_until_ts,
+            fallback_until,
+        )
 
         self._transition_speech(SpeechState.IDLE, event)
         self._transition_llm(LLMState.IDLE, event)
@@ -709,25 +734,32 @@ class SkullControlBTNode(Node):
 
     def _handle_interrupt(self, interrupt_token: str):
         """Stop all active speech and reasoning, then return to TRACKING or IDLE."""
-        self._stop_tts()
-        self._cancel_llm_reasoning()
+        is_reset = interrupt_token == 'RESET'
+        if is_reset:
+            self._reset_tts()
+            self._reset_llm()
+            event = 'reset_detected'
+        else:
+            self._stop_tts()
+            self._cancel_llm_reasoning()
+            event = 'interrupt_detected'
 
-        self._transition_speech(SpeechState.IDLE, 'interrupt_detected')
-        self._transition_llm(LLMState.IDLE, 'interrupt_detected')
+        self._transition_speech(SpeechState.IDLE, event)
+        self._transition_llm(LLMState.IDLE, event)
 
         if self.blackboard.current_target is not None:
-            self._transition_general(GeneralState.TRACKING, 'interrupt_detected')
+            self._transition_general(GeneralState.TRACKING, event)
             if not self._overlay_active():
-                self._transition_eye(EyeState.TRACKING, 'interrupt_detected')
+                self._transition_eye(EyeState.TRACKING, event)
         else:
-            self._transition_general(GeneralState.IDLE, 'interrupt_detected')
+            self._transition_general(GeneralState.IDLE, event)
             if not self._overlay_active():
-                self._transition_eye(EyeState.IDLE, 'interrupt_detected')
+                self._transition_eye(EyeState.IDLE, event)
 
         self.blackboard.last_interest_ts = time.monotonic()
         self._publish_system_event_to_llm(
             source='stt',
-            event='interrupt_detected',
+            event=event,
             urgency='high',
             payload={'token': interrupt_token},
         )
@@ -749,30 +781,42 @@ class SkullControlBTNode(Node):
         if msg.is_last_chunk and self.blackboard.speech_state == SpeechState.SPEAKING:
             self.on_tts_done()
 
-    def llm_status_callback(self, msg: String):
+    def speaker_playback_timing_callback(self, msg: PlaybackTiming):
+        """
+        Adaptive echo suppression gate based on actual utterance playback length
+        from speaker_node.
+        """
+        duration_sec = float(msg.duration_sec)
+        if duration_sec <= 0.0:
+            return
+
+        now = time.monotonic()
+        expected_end = float(msg.expected_end_mono) if float(msg.expected_end_mono) > 0.0 else (now + duration_sec)
+
+        suppress_until = expected_end + PLAYBACK_ECHO_TAIL_SEC
+        if suppress_until > self.blackboard.stt_echo_suppress_until_ts:
+            self.blackboard.stt_echo_suppress_until_ts = suppress_until
+
+    def llm_status_callback(self, msg: LlmStatus):
         """
         Handle runtime/agent health notifications from llm_agent_http_node.
 
         If the LLM fails while we're in THINKING, force a safe recovery so
         the FSM does not remain wedged waiting for a TTS signal.
         """
-        try:
-            status_payload = json.loads(msg.data)
-        except json.JSONDecodeError:
-            self.get_logger().warning(f'Ignoring malformed /llm_agent/status payload: {msg.data!r}')
-            return
+        status = str(msg.status).strip().lower()
+        reason = str(msg.reason).strip().lower()
 
-        status = str(status_payload.get('status', '')).strip().lower()
-        reason = str(status_payload.get('reason', '')).strip().lower()
-
-        non_fatal_statuses = {'runtime_restarted', 'cancelled'}
+        non_fatal_statuses = {'ready', 'runtime_restarted', 'cancelled', 'reset'}
         fatal_statuses = {'restart_failed', 'runtime_error_output', 'parse_error', 'error'}
 
         if status in non_fatal_statuses:
             return
 
         if status not in fatal_statuses:
-            self.get_logger().warning(f'Unknown llm status received: {status_payload}')
+            self.get_logger().warning(
+                f'Unknown llm status received: status={msg.status!r} reason={msg.reason!r} detail={msg.detail!r}'
+            )
             return
 
         if self.blackboard.general_state != GeneralState.THINKING and self.blackboard.llm_state != LLMState.THINKING:

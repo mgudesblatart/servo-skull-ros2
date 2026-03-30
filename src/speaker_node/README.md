@@ -13,7 +13,9 @@ Python ROS2 node. Receives `AudioData` messages and plays them through a persist
 | Direction | Topic | Type | Notes |
 |---|---|---|---|
 | Subscribe | `/speaker/audio_output` | `servo_skull_msgs/AudioData` | int16 PCM audio chunks |
+| Subscribe | `/speaker_node/control` | `std_msgs/String` | `STOP`/`CANCEL`/`HALT` for immediate playback abort |
 | Publish | `/speaker_node/ready` | `std_msgs/Bool` | Latched; `true` once OutputStream is open and playback thread is running |
+| Publish | `/speaker_node/playback_timing` | `servo_skull_msgs/PlaybackTiming` | Playback duration/end estimate for adaptive STT echo suppression |
 
 **Parameters:**
 
@@ -68,4 +70,5 @@ ros2 run speaker_node speaker_node
 - The `OutputStream` is opened once at init at 48000 Hz, 1 channel, `float32`. Audio arriving at 22050 Hz (from Piper TTS) is resampled with `scipy.signal.resample_poly` before being written to the stream.
 - Playback runs in a separate daemon thread (`playback_worker`). The audio queue holds up to 100 chunks.
 - `JACK_NO_START_SERVER=1` is set by the full pipeline launch to suppress JACK audio daemon errors on systems without JACK. If running the node in isolation and you see JACK errors, `export JACK_NO_START_SERVER=1` before launching.
-- The `is_last_chunk` flag in `AudioData` is unused at this layer; all chunks are played in order regardless.
+- The node accumulates all chunks until `is_last_chunk=true`, then writes one full utterance to the stream.
+- Before each `stream.write(full_audio)`, the node publishes `/speaker_node/playback_timing` so `skull_control_node` can set dynamic echo-suppression windows.

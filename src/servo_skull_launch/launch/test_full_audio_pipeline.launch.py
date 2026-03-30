@@ -14,7 +14,6 @@ from launch.event_handlers import OnProcessStart, OnProcessExit
 from launch.events import Shutdown
 
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, EnvironmentVariable
 from ament_index_python.packages import get_package_share_directory
 import os
@@ -56,6 +55,34 @@ ok = node.ready
 node.destroy_node()
 rclpy.shutdown()
 sys.exit(0 if ok else 1)
+"""
+
+WAIT_FOR_HTTP_READY_SCRIPT = r"""
+import json
+import sys
+import time
+import urllib.request
+
+base_url = sys.argv[1].rstrip('/')
+timeout = float(sys.argv[2])
+deadline = time.time() + timeout
+last_err = ''
+
+while time.time() < deadline:
+    try:
+        req = urllib.request.Request(base_url + '/v1/models', method='GET', headers={'Accept': 'application/json'})
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            body = resp.read().decode('utf-8', errors='replace')
+            if getattr(resp, 'status', 200) == 200:
+                json.loads(body)
+                sys.exit(0)
+            last_err = f'HTTP {getattr(resp, "status", "unknown")}'
+    except Exception as exc:
+        last_err = str(exc)
+    time.sleep(0.5)
+
+print(f'axllm readiness check failed: {last_err}', file=sys.stderr)
+sys.exit(1)
 """
 
 
@@ -141,6 +168,10 @@ def generate_launch_description():
         cmd=['python3', '-c', WAIT_FOR_READY_SCRIPT, '/stt_node/ready', '45.0'],
         output='log',
     )
+    wait_axllm_ready = ExecuteProcess(
+        cmd=['python3', '-c', WAIT_FOR_HTTP_READY_SCRIPT, LaunchConfiguration('axllm_base_url'), LaunchConfiguration('axllm_ready_timeout')],
+        output='log',
+    )
 
     axllm_native_backend = ExecuteProcess(
         cmd=[
@@ -157,7 +188,6 @@ def generate_launch_description():
         ],
         output='screen',
         emulate_tty=True,
-        condition=IfCondition(LaunchConfiguration('start_axllm_native_backend')),
     )
 
     def start_next_on_success(next_action, stage_name: str):
@@ -190,11 +220,6 @@ def generate_launch_description():
             description='Audio output device index or name for speaker_node'
         ),
         DeclareLaunchArgument(
-            'start_axllm_native_backend',
-            default_value='false',
-            description='Whether to start native axllm serve with preflight inside this launch.',
-        ),
-        DeclareLaunchArgument(
             'axllm_startup_script',
             default_value='/home/murray/projects/servo-skull/scripts/start_axllm_native_serve.sh',
             description='Startup wrapper script that runs tokenizer preflight then starts axllm serve.',
@@ -224,6 +249,11 @@ def generate_launch_description():
             default_value='http://127.0.0.1:8081',
             description='axllm HTTP server URL used by llm_agent_http_node.',
         ),
+        DeclareLaunchArgument(
+            'axllm_ready_timeout',
+            default_value='60.0',
+            description='Seconds to wait for axllm /v1/models readiness before aborting launch.',
+        ),
 
         # Ordered startup chain:
         # 1) microphone -> wait mic ready
@@ -231,6 +261,7 @@ def generate_launch_description():
         # 3) tts -> wait tts ready
         # 4) stt -> wait stt ready
         # 5) HTTP LLM agent
+        axllm_native_backend,
         microphone_node,
         RegisterEventHandler(
             OnProcessStart(
@@ -277,7 +308,13 @@ def generate_launch_description():
         RegisterEventHandler(
             OnProcessExit(
                 target_action=wait_stt_ready,
-                on_exit=start_next_on_success(GroupAction(actions=[axllm_native_backend, http_launch]), 'stt_node'),
+                on_exit=start_next_on_success(wait_axllm_ready, 'stt_node'),
+            )
+        ),
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=wait_axllm_ready,
+                on_exit=start_next_on_success(http_launch, 'axllm_backend'),
             )
         ),
     ])

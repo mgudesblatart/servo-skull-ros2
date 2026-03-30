@@ -8,8 +8,6 @@ Parses raw text output from the LLM runtime into the expected JSON contract:
         "tool_calls": [{"say_phrase": {"msg": "..."}}]
     }
 
-``final_output`` is optional and ignored if present.
-
 The model doesn't always return clean JSON, so we try several recovery
 strategies in order before giving up and wrapping the whole output in a
 synthetic fallback contract (so something is always spoken rather than silence).
@@ -28,7 +26,7 @@ import re
 from typing import Any
 
 
-# Minimum keys the model must produce (final_output is optional/ignored)
+# Only keys the model contract permits.
 REQUIRED_KEYS = {"thoughts", "tool_calls"}
 
 # Used to identify and skip runtime diagnostic lines in model output
@@ -55,6 +53,31 @@ def _strip_markdown_fences(raw_text: str) -> str:
             lines = lines[:-1]
         text = "\n".join(lines).strip()
     return text
+
+
+# ---------------------------------------------------------------------------
+# JSON typo repair
+# ---------------------------------------------------------------------------
+
+def _repair_common_json_typos(text: str) -> str:
+    """
+    Fix recurring model output typos that break valid JSON parsing.
+    Handles:
+      - "key",{...} -> "key":{...}
+      - "key","value" -> "key":"value"
+    but only when the malformed key appears in an object entry position.
+    """
+    repaired = re.sub(
+        r'([,{]\s*)"([^"]+)",\s*(\{)',
+        r'\1"\2": \3',
+        text,
+    )
+    repaired = re.sub(
+        r'([,{]\s*)"([^"]+)",\s*"((?:\\.|[^"\\])*)"',
+        r'\1"\2": "\3"',
+        repaired,
+    )
+    return repaired
 
 
 # ---------------------------------------------------------------------------
@@ -100,14 +123,21 @@ def _extract_balanced_json_block(raw_text: str) -> str | None:
 
 
 def _validate_schema(payload: Any) -> dict[str, Any] | None:
-    """Return the payload if it satisfies the required-keys contract, else None."""
+    """Return normalized payload if it satisfies the strict contract, else None."""
     if not isinstance(payload, dict):
         return None
     if not REQUIRED_KEYS.issubset(payload.keys()):
         return None
+    if not isinstance(payload["thoughts"], str):
+        return None
     if not isinstance(payload["tool_calls"], list):
         return None
-    return payload
+    # Normalize to the strict two-key contract to avoid leaking legacy keys
+    # (for example final_output) into downstream state/history.
+    return {
+        "thoughts": payload["thoughts"],
+        "tool_calls": payload["tool_calls"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +193,7 @@ def parse_response(raw_text: str) -> dict[str, Any] | None:
     # Strip Qwen3 <think>...</think> block before any other processing
     think_stripped = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
     working_text = think_stripped if think_stripped else raw_text
+    working_text = _repair_common_json_typos(working_text)
 
     # Strategy 1: strip markdown fences, try direct parse
     stripped = _strip_markdown_fences(working_text)

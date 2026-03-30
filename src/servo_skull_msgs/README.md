@@ -15,7 +15,64 @@ Raw audio payload for inter-node audio transport (TTS → Speaker).
 | `data` | `int16[]` | Raw PCM samples (16-bit signed, little-endian) |
 | `sample_rate` | `uint32` | Sample rate in Hz (typically 22050 from Piper) |
 | `channels` | `uint8` | Channel count (1 = mono) |
-| `is_last_chunk` | `bool` | Marks the final chunk of an utterance (informational; not currently acted on by speaker_node) |
+| `is_last_chunk` | `bool` | Marks the final chunk of an utterance (used by speaker/skull control state transitions) |
+
+---
+
+### `PlaybackTiming`
+
+Speaker playback timing metadata for adaptive STT echo suppression.
+
+| Field | Type | Description |
+|---|---|---|
+| `duration_sec` | `float32` | Duration of the utterance written to the speaker stream |
+| `expected_end_mono` | `float64` | Predicted `time.monotonic()` end timestamp |
+| `sample_rate` | `uint32` | Playback sample rate used by speaker node |
+| `channels` | `uint8` | Playback channel count |
+
+---
+
+### `LlmInput`
+
+Typed envelope from `skull_control_node` to `llm_agent_http_node`.
+
+| Field | Type | Description |
+|---|---|---|
+| `channel` | `string` | `human | system | mixed` |
+| `source` | `string` | Origin subsystem, e.g. `stt`, `person_tracking`, `fsm` |
+| `type` | `string` | Envelope type, e.g. `transcript` or `event` |
+| `event` | `string` | Event name (`human_transcript`, `person_detected`, etc.) |
+| `urgency` | `string` | `low | medium | high` |
+| `text` | `string` | Optional natural-language text payload |
+| `payload_json` | `string` | Optional JSON metadata object encoded as string |
+| `ts` | `float64` | Wall-clock publish timestamp (`time.time()`) |
+
+---
+
+### `LlmStatus`
+
+Typed runtime/health status from `llm_agent_http_node` to `skull_control_node`.
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | `string` | Status code (`ready`, `error`, `parse_error`, etc.) |
+| `reason` | `string` | Optional short reason code |
+| `detail` | `string` | Optional detail text |
+| `ts` | `float64` | Wall-clock timestamp |
+
+---
+
+### `StateTransition`
+
+Typed FSM transition trace emitted by `skull_control_node`.
+
+| Field | Type | Description |
+|---|---|---|
+| `ts` | `float64` | Wall-clock timestamp |
+| `subsystem` | `string` | `general`, `eye`, `llm`, or `speech` |
+| `from_state` | `string` | Previous state |
+| `to_state` | `string` | New state |
+| `event` | `string` | Trigger event name |
 
 ---
 

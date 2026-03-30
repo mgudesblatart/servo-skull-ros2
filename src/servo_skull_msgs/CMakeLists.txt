@@ -9,6 +9,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TrackedPerson.msg"
   "msg/TrackedPersons.msg"
   "msg/AudioData.msg"
+  "msg/PlaybackTiming.msg"
+  "msg/LlmInput.msg"
+  "msg/LlmStatus.msg"
+  "msg/StateTransition.msg"
 )
 
 ament_export_dependencies(rosidl_default_runtime)

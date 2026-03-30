@@ -9,7 +9,7 @@ chunk arrives, identified by the is_last_chunk flag.
 Topic wiring:
   Subscriptions:
     /speaker/audio_output   (servo_skull_msgs/AudioData)  — int16 PCM chunks
-    /speaker_node/control   (std_msgs/String)             — STOP / CANCEL / HALT
+        /speaker_node/control   (std_msgs/String)             — STOP / CANCEL / HALT / RESET
   Publications:
     /speaker_node/ready  (std_msgs/Bool, latched)  — readiness flag
 
@@ -26,6 +26,7 @@ prevents underrun artefacts when the TTS pipeline fires in quick succession.
 
 import queue
 import threading
+import time
 
 import numpy as np
 import rclpy
@@ -33,7 +34,7 @@ import scipy.signal
 import sounddevice as sd
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from servo_skull_msgs.msg import AudioData
+from servo_skull_msgs.msg import AudioData, PlaybackTiming
 from std_msgs.msg import Bool, String
 
 
@@ -143,6 +144,19 @@ class SpeakerNode(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self.ready_pub = self.create_publisher(Bool, "/speaker_node/ready", ready_qos)
+        self.playback_timing_pub = self.create_publisher(PlaybackTiming, "/speaker_node/playback_timing", 10)
+
+    def _publish_playback_timing(self, duration_sec: float, channels: int):
+        """Publish playback timing so skull_control can adapt STT echo suppression."""
+        if duration_sec <= 0.0:
+            return
+        now_mono = time.monotonic()
+        msg = PlaybackTiming()
+        msg.duration_sec = float(duration_sec)
+        msg.expected_end_mono = float(now_mono + duration_sec)
+        msg.sample_rate = int(PLAYBACK_SAMPLE_RATE)
+        msg.channels = int(channels)
+        self.playback_timing_pub.publish(msg)
 
     def _start_stream(self):
         """Open the persistent OutputStream. Called once at __init__ time."""
@@ -190,11 +204,11 @@ class SpeakerNode(Node):
 
     def control_callback(self, msg: String):
         """
-        Handle STOP / CANCEL / HALT. Drains the queue, then aborts and
+        Handle STOP / CANCEL / HALT / RESET. Drains the queue, then aborts and
         restarts the OutputStream to cut off mid-utterance playback immediately.
         """
         command = msg.data.strip().upper()
-        if command not in {"STOP", "CANCEL", "HALT"}:
+        if command not in {"STOP", "CANCEL", "HALT", "RESET"}:
             return
 
         self.stop_requested.set()
@@ -325,6 +339,8 @@ class SpeakerNode(Node):
             return
 
         try:
+            duration_sec = float(len(full_audio)) / float(PLAYBACK_SAMPLE_RATE)
+            self._publish_playback_timing(duration_sec, channels)
             self.stream.write(full_audio)
             self.get_logger().info(
                 f"Played utterance at {PLAYBACK_SAMPLE_RATE} Hz, "

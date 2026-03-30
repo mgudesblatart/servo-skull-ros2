@@ -8,7 +8,7 @@ synthesises them using a Piper voice model, and publishes AudioData chunks to
 Topic wiring:
   Subscriptions:
     /text_to_speech/text_input  (std_msgs/String)  — text to synthesise
-    /tts_node/control           (std_msgs/String)  — STOP / CANCEL / HALT
+        /tts_node/control           (std_msgs/String)  — STOP / CANCEL / HALT / RESET
   Publications:
     /speaker/audio_output  (servo_skull_msgs/AudioData)  — int16 PCM chunks
     /tts_node/ready        (std_msgs/Bool, latched)      — readiness flag
@@ -138,9 +138,9 @@ class TTSNode(Node):
     # -----------------------------------------------------------------------
 
     def control_callback(self, msg: String):
-        """Handle STOP / CANCEL / HALT — interrupt the current synthesis and clear pending work."""
+        """Handle STOP / CANCEL / HALT / RESET — interrupt synthesis and clear pending work."""
         command = msg.data.strip().upper()
-        if command not in {"STOP", "CANCEL", "HALT"}:
+        if command not in {"STOP", "CANCEL", "HALT", "RESET"}:
             return
         self.stop_requested.set()
         dropped = self._drain_tts_queue()

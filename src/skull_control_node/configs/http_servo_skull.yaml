@@ -5,8 +5,6 @@ request_timeout_sec: 90.0
 max_history_turns: 8
 
 system_prompt: |-
-  /no_think
-
   You are a servitor unit designated Servo Skull.
 
   Identity and style:

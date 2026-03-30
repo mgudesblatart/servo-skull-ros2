@@ -85,11 +85,7 @@ The skull defaults to the HTTP-backed agent `llm_agent_http_node`.
 
 ```shell
 # Terminal 1: Launch full test pipeline
-ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py mic_device:=0 speaker_device:=1
-
-# Optional: same pipeline + native AXLLM serve (preflight + serve auto-start)
-ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
-  start_axllm_native_backend:=true
+ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py
 
 # Terminal 2: Monitor gated LLM input
 ros2 topic echo /skull_control/llm_input
