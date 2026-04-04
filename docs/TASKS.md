@@ -1,7 +1,7 @@
 # Servo Skull Development Tasks
 
 **Date**: 2026-03-23
-**Project Status**: Task 8 (State Machine) complete; Task 9 (Context & Resilience) in planning phase.
+**Project Status**: Task 8 (State Machine) complete and live-validated; Task 9 (Context & Resilience) in progress.
 
 ## Completed Work
 
@@ -19,7 +19,7 @@
 - `src/servo_skull_launch/launch/test_full_audio_pipeline.launch.py`
 - `src/servo_skull_launch/launch/axllm_native_backend.launch.py`
 
-**Validated**: Architecture complete. Syntax-checked on development machine. Lives tests on Pi pending.
+**Validated**: Live Pi smoke tests passed via `scripts/pi_fsm_gate_smoketest.sh` and `scripts/pi_interrupt_quickcheck.sh`.
 
 ---
 
@@ -54,16 +54,20 @@
 ---
 
 ### 9.2: Message Windowing for Context Management
-**Status**: NOT STARTED
+**Status**: IN PROGRESS
 
 **Goal**: Keep conversation history to recent ~4 turns + summary to avoid rapid context exhaustion.
 
 **Why**: Current Qwen3-1.7B pack has finite KV cache budget. As history grows, usable input space shrinks. Windowing keeps only recent turns + summary of older ones.
 
-**Design**:
-- Create `src/skull_control_node/skull_control_node/llm_conversation_buffer.py`
-- Implement sliding window: system_prompt + summary text + last 2-4 turns max
-- Track estimated remaining KV budget in real-time
+**Current state**:
+- `llm_agent_http_node.py` now uses a summarized sliding conversation buffer instead of a flat rolling history list.
+- Older turns are compacted into a lightweight summary when they fall out of the active window.
+- Approximate token budget tracking is in place via `max_window_tokens`.
+
+**Remaining design/work**:
+- Refine `src/skull_control_node/skull_control_node/llm_conversation_buffer.py`
+- Improve summary quality beyond the current lightweight heuristic compaction
 - On each new turn, discard oldest if window is full
 - Before discarding, generate 1-2 sentence summary to preserve context
 
@@ -150,7 +154,7 @@ conversation.append({
 ---
 
 ### 9.4: Proactive Context Reset Policy
-**Status**: NOT STARTED
+**Status**: IN PROGRESS
 
 **Goal**: Reset conversation thread before context_full errors occur, with user awareness.
 
@@ -166,6 +170,11 @@ conversation.append({
      - Calls LLM reset endpoint with new system prompt + summary
      - Publishes `context_reset_complete` event
   3. FSM transitions to IDLE for a moment, then resumes
+
+**Current state**:
+- `llm_agent_http_node.py` now publishes non-fatal `/llm_agent/status` warning events when the conversation budget is low.
+- When budget crosses the reset threshold, the HTTP agent performs a best-effort backend reset and reseeds the new conversation with a compact summary of prior turns.
+- BT currently treats these warning/reset statuses as non-fatal telemetry only; user-facing reset UX and explicit FSM choreography are still pending.
 
 **New Topics**:
 - `/skull_control/context_reset_requested` — emitted when budget exhausted
@@ -220,7 +229,10 @@ conversation.append({
 ✅ **STT Gating During Speech**: Implemented
 ✅ **Echo Suppression**: Content-aware + time-based gates active
 
-🟡 **Live Runtime Validation on Pi**, **Message Windowing**, **History Compression**, **Proactive Reset**: Planned, not started
+🟡 **Live Runtime Validation of LLM recovery on Pi**: Planned, not started
+🟡 **Message Windowing**: Foundation started in `llm_agent_http_node`; summary quality and reset policy still pending
+🟡 **History Compression**: Planned, not started
+🟡 **Proactive Reset**: Foundation started in `llm_agent_http_node`; BT/user-facing reset UX still pending
 
 ---
 

@@ -2,6 +2,8 @@
 
 Date: 2026-03-18
 
+Historical note: Task 8 has since been implemented and live-validated on Pi via the FSM gate and interrupt smoke tests. This file remains as the original design spec.
+
 ## Constants
 
 - LOW_INTEREST_TIMEOUT_S = 60.0

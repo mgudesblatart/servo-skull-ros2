@@ -41,6 +41,7 @@ from servo_skull_msgs.msg import LlmInput, LlmStatus
 from std_msgs.msg import String
 
 from skull_control_node.axllm_http_client import AxllmHttpClient
+from skull_control_node.llm_conversation_buffer import ConversationBuffer
 from skull_control_node.response_parser import extract_say_phrase_calls, parse_response
 
 
@@ -84,18 +85,25 @@ class LLMAgentHttpNode(Node):
             or str(config.get("system_prompt", ""))
         ).strip()
 
-        # Rolling history: list of {"role": "system"|"user"|"assistant", "content": str}
-        self._history: list[dict] = []
-        if self.system_prompt:
-            self._history.append({"role": "system", "content": self.system_prompt})
-            self.get_logger().info("System prompt loaded into conversation history as first message.")
-        else:
-            self.get_logger().info("No system prompt configured; conversation starts without a system message.")
-        self._history_lock = threading.Lock()
         self._max_history_turns = int(
             self.get_parameter("max_history_turns").value
             or config.get("max_history_turns", 8)
         )
+        self._max_window_tokens = int(
+            self.get_parameter("max_window_tokens").value
+            or config.get("max_window_tokens", 1500)
+        )
+        self._history_lock = threading.Lock()
+        self._conversation_buffer = ConversationBuffer(
+            system_prompt=self.system_prompt,
+            max_turns=self._max_history_turns,
+            max_window_tokens=self._max_window_tokens,
+        )
+        self._budget_warning_level = "ok"
+        if self.system_prompt:
+            self.get_logger().info("System prompt loaded into conversation history as first message.")
+        else:
+            self.get_logger().info("No system prompt configured; conversation starts without a system message.")
 
         self._server_ready = False
         self.http_client = self._build_http_client(config)
@@ -105,7 +113,8 @@ class LLMAgentHttpNode(Node):
         self.get_logger().info(
             f"LLM Agent HTTP Node starting (will poll for server readiness). "
             f"base_url={self.http_client.base_url}, "
-            f"max_history_turns={self._max_history_turns}."
+            f"max_history_turns={self._max_history_turns}, "
+            f"max_window_tokens={self._max_window_tokens}."
         )
         self._readiness_timer = self.create_timer(
             0.5, self._poll_server_readiness, callback_group=self.callback_group
@@ -122,6 +131,7 @@ class LLMAgentHttpNode(Node):
         self.declare_parameter("startup_timeout_sec", 30.0)
         self.declare_parameter("request_timeout_sec", 60.0)
         self.declare_parameter("max_history_turns", 8)
+        self.declare_parameter("max_window_tokens", 1500)
         self.declare_parameter("system_prompt", "")
 
     def _load_config(self) -> dict:
@@ -214,34 +224,82 @@ class LLMAgentHttpNode(Node):
     def _build_messages(self, user_content: str) -> list[dict]:
         """Assemble full OpenAI messages list: history + new user turn."""
         with self._history_lock:
-            messages: list[dict] = list(self._history)
+            messages: list[dict] = self._conversation_buffer.get_history_for_prompt()
         messages.append({"role": "user", "content": user_content})
         return messages
 
     def _append_turn(self, user_content: str, assistant_content: str) -> None:
-        """Add a completed turn to history, trimming oldest pairs to stay within window."""
+        """Add a completed turn to the summarized rolling history buffer."""
         with self._history_lock:
-            self._history.append({"role": "user", "content": user_content})
-            self._history.append({"role": "assistant", "content": assistant_content})
-            # Keep the leading system message if present; trim only conversation turns.
-            if self._history and self._history[0].get("role") == "system":
-                system_msg = self._history[0]
-                turns = self._history[1:]
-                max_turn_msgs = self._max_history_turns * 2
-                if len(turns) > max_turn_msgs:
-                    turns = turns[-max_turn_msgs:]
-                self._history = [system_msg] + turns
-            else:
-                max_msgs = self._max_history_turns * 2
-                if len(self._history) > max_msgs:
-                    self._history = self._history[-max_msgs:]
+            self._conversation_buffer.add_turn(user_content, assistant_content)
+
+        remaining_budget = self._conversation_buffer.get_remaining_budget()
+        self._publish_budget_status(remaining_budget)
 
     def _clear_history(self, reason: str = "") -> None:
         with self._history_lock:
-            self._history.clear()
-            if self.system_prompt:
-                self._history.append({"role": "system", "content": self.system_prompt})
+            self._conversation_buffer.clear()
+        self._budget_warning_level = "ok"
         self.get_logger().info(f"Conversation history cleared. reason={reason or 'unknown'}")
+
+    def _publish_budget_status(self, remaining_budget: int) -> None:
+        low_threshold = max(200, self._max_window_tokens // 4)
+        next_level = "ok"
+        if remaining_budget < self._conversation_buffer.reset_threshold_tokens:
+            next_level = "critical"
+        elif remaining_budget < low_threshold:
+            next_level = "low"
+
+        if next_level == self._budget_warning_level:
+            return
+
+        self._budget_warning_level = next_level
+        if next_level == "low":
+            detail = f"remaining_tokens={remaining_budget};threshold={low_threshold}"
+            self._publish_status("warning", reason="context_budget_low", detail=detail)
+            self.get_logger().info(
+                f"Conversation buffer budget getting tight: remaining_tokens={remaining_budget}"
+            )
+        elif next_level == "critical":
+            detail = (
+                f"remaining_tokens={remaining_budget};"
+                f"threshold={self._conversation_buffer.reset_threshold_tokens}"
+            )
+            self._publish_status("warning", reason="context_budget_critical", detail=detail)
+            self.get_logger().warning(
+                f"Conversation buffer critically low before reset: remaining_tokens={remaining_budget}"
+            )
+
+    def _perform_context_reset(self, pending_user_content: str) -> None:
+        with self._history_lock:
+            summary = self._conversation_buffer.generate_reset_summary()
+            remaining_before = self._conversation_buffer.get_remaining_budget(pending_user_content)
+            self._conversation_buffer.reset_with_summary(summary)
+            remaining_after = self._conversation_buffer.get_remaining_budget(pending_user_content)
+
+        self._publish_status(
+            "warning",
+            reason="context_reset_requested",
+            detail=f"remaining_before={remaining_before}",
+        )
+        backend_reset_ok = self.http_client.reset()
+        self._budget_warning_level = "ok"
+        self._publish_status(
+            "reset",
+            reason="context_budget_reset",
+            detail=(
+                f"remaining_before={remaining_before};"
+                f"remaining_after={remaining_after};"
+                f"summary_seeded={'yes' if bool(summary) else 'no'};"
+                f"backend_reset_ok={backend_reset_ok}"
+            ),
+        )
+        self.get_logger().warning(
+            "Context budget exhausted; reset conversation history with summary seed. "
+            f"remaining_before={remaining_before} remaining_after={remaining_after} "
+            f"backend_reset_ok={backend_reset_ok}"
+        )
+        self._publish_budget_status(remaining_after)
 
     # -----------------------------------------------------------------------
     # Envelope helpers
@@ -408,6 +466,10 @@ class LLMAgentHttpNode(Node):
                 )
                 return
         user_content = self._build_user_content(envelope)
+        remaining_budget = self._conversation_buffer.get_remaining_budget(user_content)
+        self._publish_budget_status(remaining_budget)
+        if self._conversation_buffer.should_reset(user_content):
+            self._perform_context_reset(user_content)
 
         try:
             self.request_in_flight.set()

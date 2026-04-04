@@ -807,7 +807,7 @@ class SkullControlBTNode(Node):
         status = str(msg.status).strip().lower()
         reason = str(msg.reason).strip().lower()
 
-        non_fatal_statuses = {'ready', 'runtime_restarted', 'cancelled', 'reset'}
+        non_fatal_statuses = {'ready', 'runtime_restarted', 'cancelled', 'reset', 'warning'}
         fatal_statuses = {'restart_failed', 'runtime_error_output', 'parse_error', 'error'}
 
         if status in non_fatal_statuses:

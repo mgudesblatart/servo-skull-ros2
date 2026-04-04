@@ -14,6 +14,7 @@ Guardrails in current implementation:
 - Runtime/log contamination is filtered before speech publish.
 - Strict response contract uses only `thoughts` + `tool_calls`.
 - For `channel=human` inputs, if no `say_phrase` is produced, a sanitized fallback phrase is spoken.
+- Conversation history now uses a summarized sliding window instead of an unbounded flat turn list.
 
 **Pipeline position:** STT → skull_control gate (`/skull_control/llm_input`) → **LLM Agent** → TTS
 
@@ -36,6 +37,7 @@ Guardrails in current implementation:
 | `startup_timeout_sec` | `30.0` | Startup readiness timeout |
 | `request_timeout_sec` | `60.0` | Per-request timeout |
 | `max_history_turns` | `8` | Rolling conversation history size |
+| `max_window_tokens` | `1500` | Approximate token budget for system prompt + summary + recent turns |
 | `system_prompt` | `""` | Optional runtime override of config prompt |
 
 ---
@@ -80,6 +82,7 @@ axllm_model: "AXERA-TECH/Qwen3-1.7B"
 startup_timeout_sec: 30.0
 request_timeout_sec: 90.0
 max_history_turns: 8
+max_window_tokens: 1500
 system_prompt: |-
   /no_think
   You are a servitor unit designated Servo Skull.
@@ -150,6 +153,18 @@ Speech-loop suppression in BT node:
 `llm_agent_http_node` talks to `axllm serve` over OpenAI-compatible HTTP (`/v1/chat/completions`).
 
 Backend readiness is checked via `/v1/models` before prompt traffic is accepted, and runtime failures are published on `/llm_agent/status` using typed `servo_skull_msgs/LlmStatus`.
+
+Conversation history is kept as:
+- system prompt
+- compact summary of evicted older turns
+- recent turn window capped by `max_history_turns` and `max_window_tokens`
+
+When remaining budget falls too low, `llm_agent_http_node` now:
+- publishes `/llm_agent/status` warning events (`context_budget_low`, `context_budget_critical`)
+- performs a best-effort backend reset
+- reseeds history with a compact summary via `context_budget_reset`
+
+This is the current Task 9 context-management path; higher-quality summaries and user-facing reset UX are still separate work.
 
 ---
 
