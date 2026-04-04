@@ -3,11 +3,10 @@
 
 set -e
 
-# Activate your virtualenv if needed
-source ~/projects/venv-servo-skull/bin/activate
-
 # Source ROS2 and workspace overlays
+# Activate your virtualenv if needed
 source /opt/ros/jazzy/setup.bash
+source ~/projects/venv-servo-skull/bin/activate
 source ~/projects/servo-skull/install/setup.bash
 
 # Start speaker_node in background

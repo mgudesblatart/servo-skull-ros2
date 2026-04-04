@@ -146,3 +146,22 @@ Machine-readable output:
 /home/murray/projects/venv-servo-skull/bin/python /home/murray/projects/servo-skull/scripts/evaluate_axllm_server.py \
   --json
 ```
+
+# if axcl-smi shows card not found
+```shell
+sudo apt remove axclhost
+```
+```shell
+sudo apt update
+sudo apt full-upgrade
+sudo reboot
+```
+```shell
+sudo apt install raspberrypi-kernel-headers
+```
+```shell
+sudo apt install dkms
+sudo apt install axclhost
+source /etc/profile
+axcl-smi
+```

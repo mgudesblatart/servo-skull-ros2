@@ -22,14 +22,16 @@ IDLE_WAIT_SEC="${IDLE_WAIT_SEC:-15}"         # Wait for watchdog to fire between
 TOPIC_WAIT_SEC="${TOPIC_WAIT_SEC:-10}"
 
 TRANSITION_TOPIC="/skull_control/state_transition"
-TRACK_TOPIC="/person_tracking/tracked_persons"
 RAW_STT_TOPIC="/speech_to_text/transcript"
 LLM_INPUT_TOPIC="/skull_control/llm_input"
-TTS_INPUT_TOPIC="/text_to_speech/text_input"
 TEST_EVENT_TOPIC="/skull_control/test_event"
 TTS_CONTROL_TOPIC="/tts_node/control"
 SPEAKER_CONTROL_TOPIC="/speaker_node/control"
-LLM_CONTROL_TOPIC="/llm_agent_axcl/control"
+LLM_CONTROL_TOPIC="/llm_agent/control"
+
+STATE_TRANSITION_TYPE="servo_skull_msgs/msg/StateTransition"
+LLM_INPUT_TYPE="servo_skull_msgs/msg/LlmInput"
+STRING_TYPE="std_msgs/msg/String"
 
 BLOCK_TOKEN="GATE_BLOCK_TEST_$(date +%s)"
 INTERRUPT_TOKEN="HALT"
@@ -75,6 +77,30 @@ wait_for_topic() {
   return 1
 }
 
+wait_for_topic_type() {
+  local topic="$1"
+  local expected_type="$2"
+  local wait_sec="$3"
+  local elapsed=0
+  local actual_type=""
+
+  while [[ "${elapsed}" -lt "${wait_sec}" ]]; do
+    actual_type="$(ros2 topic type "${topic}" 2>/dev/null | head -n1 | tr -d '[:space:]')"
+    if [[ -n "${actual_type}" ]]; then
+      if [[ "${actual_type}" == "${expected_type}" ]]; then
+        return 0
+      fi
+      echo "FAIL: topic ${topic} has unexpected type ${actual_type} (expected ${expected_type})"
+      return 1
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  echo "FAIL: topic type not available for ${topic} within ${wait_sec}s"
+  return 1
+}
+
 TMP_DIR="$(mktemp -d)"
 TRACE_LOG="${TMP_DIR}/transition.log"
 GATE_LOG="${TMP_DIR}/llm_input_gate.log"
@@ -92,15 +118,21 @@ print_step "Preflight"
 echo "Blocked token: ${BLOCK_TOKEN}"
 echo "Interrupt token: ${INTERRUPT_TOKEN}"
 for required_topic in \
-  "${TRANSITION_TOPIC}" \
-  "${LLM_INPUT_TOPIC}" \
-  "${TTS_CONTROL_TOPIC}" \
-  "${SPEAKER_CONTROL_TOPIC}" \
-  "${LLM_CONTROL_TOPIC}" \
-  "${TEST_EVENT_TOPIC}"
+  "${TRANSITION_TOPIC}|${STATE_TRANSITION_TYPE}" \
+  "${LLM_INPUT_TOPIC}|${LLM_INPUT_TYPE}" \
+  "${RAW_STT_TOPIC}|${STRING_TYPE}" \
+  "${TTS_CONTROL_TOPIC}|${STRING_TYPE}" \
+  "${SPEAKER_CONTROL_TOPIC}|${STRING_TYPE}" \
+  "${LLM_CONTROL_TOPIC}|${STRING_TYPE}" \
+  "${TEST_EVENT_TOPIC}|${STRING_TYPE}"
 do
-  if ! wait_for_topic "${required_topic}" "${TOPIC_WAIT_SEC}"; then
-    echo "FAIL: required topic not available: ${required_topic}"
+  IFS='|' read -r topic expected_type <<< "${required_topic}"
+  if ! wait_for_topic "${topic}" "${TOPIC_WAIT_SEC}"; then
+    echo "FAIL: required topic not available: ${topic}"
+    echo "Hint: bring up the full pipeline with enable_test_events=true, then retry."
+    exit 1
+  fi
+  if ! wait_for_topic_type "${topic}" "${expected_type}" "${TOPIC_WAIT_SEC}"; then
     echo "Hint: bring up the full pipeline with enable_test_events=true, then retry."
     exit 1
   fi
@@ -111,10 +143,11 @@ done
 # Force SPEAKING, inject a normal transcript, confirm it doesn't reach LLM input.
 # ---------------------------------------------------------------------------
 print_step "Gate probe: force SPEAKING"
-set +o pipefail
-timeout "${SPEAKING_WAIT_SEC}s" ros2 topic echo "${TRANSITION_TOPIC}" 2>/dev/null \
-  | grep -m1 'test_event_force_speaking' > /dev/null &
-set -o pipefail
+timeout "${SPEAKING_WAIT_SEC}s" ros2 topic echo \
+  "${TRANSITION_TOPIC}" \
+  "${STATE_TRANSITION_TYPE}" \
+  --filter "m.event == 'test_event_force_speaking' and m.subsystem == 'speech' and m.to_state == 'SPEAKING'" \
+  --once > /dev/null 2>&1 &
 SPEAKING_PID=$!
 sleep 0.3
 for _ in 1 2 3; do
@@ -129,7 +162,10 @@ else
 fi
 
 print_step "Gate probe: publish BLOCK_TOKEN while SPEAKING"
-timeout 45s ros2 topic echo "${LLM_INPUT_TOPIC}" > "${GATE_LOG}" 2>&1 & GATE_PID=$!
+timeout 45s ros2 topic echo \
+  "${LLM_INPUT_TOPIC}" \
+  "${LLM_INPUT_TYPE}" \
+  --field text > "${GATE_LOG}" 2>&1 & GATE_PID=$!
 sleep 0.5
 ros2 topic pub --once "${RAW_STT_TOPIC}" std_msgs/String "data: '${BLOCK_TOKEN}'" >/dev/null
 # Negative check: short fixed window is fine here — if the token was going to
@@ -148,20 +184,22 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Wait for node to return to IDLE between phases.
+# Wait for the speech FSM to leave SPEAKING between phases.
 # The speaking stall watchdog will fire within SPEAKING_STALL_TIMEOUT_SEC.
-# We need IDLE before we can trigger a fresh SPEAKING for the interrupt probe.
+# General state may return to TRACKING or IDLE depending on whether a target
+# is still present, so the speech subsystem is the stable thing to wait on.
 # ---------------------------------------------------------------------------
-print_step "Waiting for node to return to IDLE"
-set +o pipefail
-timeout "${IDLE_WAIT_SEC}s" ros2 topic echo "${TRANSITION_TOPIC}" 2>/dev/null \
-  | grep -m1 'speaking_stall_timeout' > /dev/null &
-set -o pipefail
+print_step "Waiting for speech FSM to return to IDLE"
+timeout "${IDLE_WAIT_SEC}s" ros2 topic echo \
+  "${TRANSITION_TOPIC}" \
+  "${STATE_TRANSITION_TYPE}" \
+  --filter "m.event == 'speaking_stall_timeout' and m.subsystem == 'speech' and m.to_state == 'IDLE'" \
+  --once > /dev/null 2>&1 &
 IDLE_PID=$!
 if wait "${IDLE_PID}"; then
-  echo "Observed general->IDLE"
+  echo "Observed speech->IDLE after speaking stall timeout"
 else
-  echo "WARNING: IDLE not observed within ${IDLE_WAIT_SEC}s; proceeding anyway"
+  echo "WARNING: speech->IDLE not observed within ${IDLE_WAIT_SEC}s; proceeding anyway"
 fi
 
 # ---------------------------------------------------------------------------
@@ -169,17 +207,18 @@ fi
 # Force SPEAKING again, publish HALT, confirm control commands + transition.
 # ---------------------------------------------------------------------------
 print_step "Interrupt probe: arming capture listeners"
-timeout 45s ros2 topic echo "${TTS_CONTROL_TOPIC}"     --once > "${TTS_CTRL_LOG}"     2>&1 & TTS_PID=$!
-timeout 45s ros2 topic echo "${SPEAKER_CONTROL_TOPIC}" --once > "${SPEAKER_CTRL_LOG}" 2>&1 & SPEAKER_PID=$!
-timeout 45s ros2 topic echo "${LLM_CONTROL_TOPIC}"     --once > "${LLM_CTRL_LOG}"     2>&1 & LLM_PID=$!
-timeout 45s ros2 topic echo "${TRANSITION_TOPIC}"              > "${INT_TRACE_LOG}"    2>&1 & TRACE_PID=$!
+timeout 45s ros2 topic echo "${TTS_CONTROL_TOPIC}"     "${STRING_TYPE}" --field data --once > "${TTS_CTRL_LOG}"     2>&1 & TTS_PID=$!
+timeout 45s ros2 topic echo "${SPEAKER_CONTROL_TOPIC}" "${STRING_TYPE}" --field data --once > "${SPEAKER_CTRL_LOG}" 2>&1 & SPEAKER_PID=$!
+timeout 45s ros2 topic echo "${LLM_CONTROL_TOPIC}"     "${STRING_TYPE}" --field data --once > "${LLM_CTRL_LOG}"     2>&1 & LLM_PID=$!
+timeout 45s ros2 topic echo "${TRANSITION_TOPIC}"      "${STATE_TRANSITION_TYPE}" --field event > "${INT_TRACE_LOG}" 2>&1 & TRACE_PID=$!
 sleep 0.5
 
 print_step "Interrupt probe: force SPEAKING"
-set +o pipefail
-timeout "${SPEAKING_WAIT_SEC}s" ros2 topic echo "${TRANSITION_TOPIC}" 2>/dev/null \
-  | grep -m1 'test_event_force_speaking' > /dev/null &
-set -o pipefail
+timeout "${SPEAKING_WAIT_SEC}s" ros2 topic echo \
+  "${TRANSITION_TOPIC}" \
+  "${STATE_TRANSITION_TYPE}" \
+  --filter "m.event == 'test_event_force_speaking' and m.subsystem == 'speech' and m.to_state == 'SPEAKING'" \
+  --once > /dev/null 2>&1 &
 SPEAKING_PID2=$!
 sleep 0.3
 for _ in 1 2 3; do
@@ -194,10 +233,11 @@ else
 fi
 
 print_step "Interrupt probe: publishing HALT"
-set +o pipefail
-timeout "${INTERRUPT_WAIT_SEC}s" ros2 topic echo "${TRANSITION_TOPIC}" 2>/dev/null \
-  | grep -m1 'interrupt_detected' > /dev/null &
-set -o pipefail
+timeout "${INTERRUPT_WAIT_SEC}s" ros2 topic echo \
+  "${TRANSITION_TOPIC}" \
+  "${STATE_TRANSITION_TYPE}" \
+  --filter "m.event == 'interrupt_detected' and m.subsystem == 'speech' and m.to_state == 'IDLE'" \
+  --once > /dev/null 2>&1 &
 INTERRUPT_PID=$!
 sleep 0.2
 ros2 topic pub --once "${TEST_EVENT_TOPIC}" std_msgs/String "data: 'FORCE_SPEAKING'" >/dev/null
@@ -217,21 +257,21 @@ wait "${TTS_PID}" "${SPEAKER_PID}" "${LLM_PID}" "${TRACE_PID}" 2>/dev/null || tr
 
 PASS_COUNT=0
 
-if grep -q 'data: STOP' "${TTS_CTRL_LOG}"; then
+if grep -Fxq 'STOP' "${TTS_CTRL_LOG}"; then
   echo "PASS: tts control STOP observed"
   PASS_COUNT=$((PASS_COUNT + 1))
 else
   echo "FAIL: tts control STOP not observed"
 fi
 
-if grep -q 'data: STOP' "${SPEAKER_CTRL_LOG}"; then
+if grep -Fxq 'STOP' "${SPEAKER_CTRL_LOG}"; then
   echo "PASS: speaker control STOP observed"
   PASS_COUNT=$((PASS_COUNT + 1))
 else
   echo "FAIL: speaker control STOP not observed"
 fi
 
-if grep -q 'data: CANCEL' "${LLM_CTRL_LOG}"; then
+if grep -Fxq 'CANCEL' "${LLM_CTRL_LOG}"; then
   echo "PASS: llm control CANCEL observed"
   PASS_COUNT=$((PASS_COUNT + 1))
 else

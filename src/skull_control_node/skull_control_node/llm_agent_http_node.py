@@ -447,18 +447,6 @@ class LLMAgentHttpNode(Node):
             if p
         ]
 
-        # Human input must always produce at least one spoken reply
-        if channel == "human" and not phrases:
-            # Prefer model thoughts as the emergency spoken fallback before
-            # defaulting to a generic acknowledgement.
-            fallback = self._sanitize_spoken_phrase(
-                parsed.get("thoughts") if isinstance(parsed.get("thoughts"), str) else ""
-            )
-            if not fallback:
-                fallback = "Acknowledged."
-            phrases = [fallback]
-            self.get_logger().warning("No say_phrase in response; using sanitized fallback speech.")
-
         # Store the turn in history as normalized contract JSON to avoid
         # drifting history format toward plain assistant utterances.
         assistant_text = self._normalize_assistant_history_contract(parsed, phrases)

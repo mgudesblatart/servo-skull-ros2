@@ -8,7 +8,7 @@ set -euo pipefail
 # Checks after publishing HALT to /speech_to_text/transcript:
 # - /tts_node/control receives STOP
 # - /speaker_node/control receives STOP
-# - /llm_agent_axcl/control receives CANCEL
+# - /llm_agent/control receives CANCEL
 # - /skull_control/state_transition may include interrupt_detected (advisory)
 #
 # Usage:
@@ -23,8 +23,12 @@ RAW_STT_TOPIC="/speech_to_text/transcript"
 TEST_EVENT_TOPIC="/skull_control/test_event"
 TTS_CONTROL_TOPIC="/tts_node/control"
 SPEAKER_CONTROL_TOPIC="/speaker_node/control"
-LLM_CONTROL_TOPIC="/llm_agent_axcl/control"
+LLM_CONTROL_TOPIC="/llm_agent/control"
 TRANSITION_TOPIC="/skull_control/state_transition"
+
+STATE_TRANSITION_TYPE="servo_skull_msgs/msg/StateTransition"
+STRING_TYPE="std_msgs/msg/String"
+
 INTERRUPT_TOKEN="HALT"
 RESULT="FAIL"
 
@@ -68,6 +72,30 @@ wait_for_topic() {
   return 1
 }
 
+wait_for_topic_type() {
+  local topic="$1"
+  local expected_type="$2"
+  local wait_sec="$3"
+  local elapsed=0
+  local actual_type=""
+
+  while [[ "${elapsed}" -lt "${wait_sec}" ]]; do
+    actual_type="$(ros2 topic type "${topic}" 2>/dev/null | head -n1 | tr -d '[:space:]')"
+    if [[ -n "${actual_type}" ]]; then
+      if [[ "${actual_type}" == "${expected_type}" ]]; then
+        return 0
+      fi
+      echo "FAIL: topic ${topic} has unexpected type ${actual_type} (expected ${expected_type})"
+      return 1
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  echo "FAIL: topic type not available for ${topic} within ${wait_sec}s"
+  return 1
+}
+
 TMP_DIR="$(mktemp -d)"
 TTS_CTRL_LOG="${TMP_DIR}/tts_control.log"
 SPEAKER_CTRL_LOG="${TMP_DIR}/speaker_control.log"
@@ -80,15 +108,21 @@ print_step() {
 }
 
 print_step "Preflight"
-for topic in \
-  "${TRANSITION_TOPIC}" \
-  "${TTS_CONTROL_TOPIC}" \
-  "${SPEAKER_CONTROL_TOPIC}" \
-  "${LLM_CONTROL_TOPIC}" \
-  "${TEST_EVENT_TOPIC}"
+for required_topic in \
+  "${TRANSITION_TOPIC}|${STATE_TRANSITION_TYPE}" \
+  "${RAW_STT_TOPIC}|${STRING_TYPE}" \
+  "${TTS_CONTROL_TOPIC}|${STRING_TYPE}" \
+  "${SPEAKER_CONTROL_TOPIC}|${STRING_TYPE}" \
+  "${LLM_CONTROL_TOPIC}|${STRING_TYPE}" \
+  "${TEST_EVENT_TOPIC}|${STRING_TYPE}"
 do
+  IFS='|' read -r topic expected_type <<< "${required_topic}"
   if ! wait_for_topic "${topic}" "${TOPIC_WAIT_SEC}"; then
     echo "FAIL: required topic not available: ${topic}"
+    echo "Hint: start the full pipeline with enable_test_events=true, then retry."
+    exit 1
+  fi
+  if ! wait_for_topic_type "${topic}" "${expected_type}" "${TOPIC_WAIT_SEC}"; then
     echo "Hint: start the full pipeline with enable_test_events=true, then retry."
     exit 1
   fi
@@ -97,18 +131,19 @@ done
 print_step "Arming capture listeners"
 # All listeners start before any state changes. Generous backup timeouts;
 # they are killed explicitly after the terminal event is observed.
-timeout 45s ros2 topic echo "${TTS_CONTROL_TOPIC}"     --once > "${TTS_CTRL_LOG}"     2>&1 & TTS_PID=$!
-timeout 45s ros2 topic echo "${SPEAKER_CONTROL_TOPIC}" --once > "${SPEAKER_CTRL_LOG}" 2>&1 & SPEAKER_PID=$!
-timeout 45s ros2 topic echo "${LLM_CONTROL_TOPIC}"     --once > "${LLM_CTRL_LOG}"     2>&1 & LLM_PID=$!
-timeout 45s ros2 topic echo "${TRANSITION_TOPIC}"              > "${TRACE_LOG}"        2>&1 & TRACE_PID=$!
+timeout 45s ros2 topic echo "${TTS_CONTROL_TOPIC}"     "${STRING_TYPE}" --field data --once > "${TTS_CTRL_LOG}"     2>&1 & TTS_PID=$!
+timeout 45s ros2 topic echo "${SPEAKER_CONTROL_TOPIC}" "${STRING_TYPE}" --field data --once > "${SPEAKER_CTRL_LOG}" 2>&1 & SPEAKER_PID=$!
+timeout 45s ros2 topic echo "${LLM_CONTROL_TOPIC}"     "${STRING_TYPE}" --field data --once > "${LLM_CTRL_LOG}"     2>&1 & LLM_PID=$!
+timeout 45s ros2 topic echo "${TRANSITION_TOPIC}"      "${STATE_TRANSITION_TYPE}" --field event > "${TRACE_LOG}" 2>&1 & TRACE_PID=$!
 sleep 0.5  # Let subscriptions register before firing any events
 
 print_step "Precondition: force SPEAKING"
 # Listen first, then publish — avoids missing a fast transition.
-set +o pipefail
-timeout "${SPEAKING_WAIT_SEC}s" ros2 topic echo "${TRANSITION_TOPIC}" 2>/dev/null \
-  | grep -m1 'test_event_force_speaking' > /dev/null &
-set -o pipefail
+timeout "${SPEAKING_WAIT_SEC}s" ros2 topic echo \
+  "${TRANSITION_TOPIC}" \
+  "${STATE_TRANSITION_TYPE}" \
+  --filter "m.event == 'test_event_force_speaking' and m.subsystem == 'speech' and m.to_state == 'SPEAKING'" \
+  --once > /dev/null 2>&1 &
 SPEAKING_PID=$!
 sleep 0.3
 for _ in 1 2 3; do
@@ -125,10 +160,11 @@ fi
 
 print_step "Publishing HALT"
 # Arm interrupt gate first (listen-first), then publish immediately.
-set +o pipefail
-timeout "${INTERRUPT_WAIT_SEC}s" ros2 topic echo "${TRANSITION_TOPIC}" 2>/dev/null \
-  | grep -m1 'interrupt_detected' > /dev/null &
-set -o pipefail
+timeout "${INTERRUPT_WAIT_SEC}s" ros2 topic echo \
+  "${TRANSITION_TOPIC}" \
+  "${STATE_TRANSITION_TYPE}" \
+  --filter "m.event == 'interrupt_detected' and m.subsystem == 'speech' and m.to_state == 'IDLE'" \
+  --once > /dev/null 2>&1 &
 INTERRUPT_PID=$!
 sleep 0.2
 ros2 topic pub --once "${TEST_EVENT_TOPIC}" std_msgs/String "data: 'FORCE_SPEAKING'" >/dev/null
@@ -148,21 +184,21 @@ wait "${TTS_PID}" "${SPEAKER_PID}" "${LLM_PID}" "${TRACE_PID}" 2>/dev/null || tr
 
 PASS_COUNT=0
 
-if grep -q 'data: STOP' "${TTS_CTRL_LOG}"; then
+if grep -Fxq 'STOP' "${TTS_CTRL_LOG}"; then
   echo "PASS: TTS STOP observed"
   PASS_COUNT=$((PASS_COUNT + 1))
 else
   echo "FAIL: TTS STOP not observed"
 fi
 
-if grep -q 'data: STOP' "${SPEAKER_CTRL_LOG}"; then
+if grep -Fxq 'STOP' "${SPEAKER_CTRL_LOG}"; then
   echo "PASS: speaker STOP observed"
   PASS_COUNT=$((PASS_COUNT + 1))
 else
   echo "FAIL: speaker STOP not observed"
 fi
 
-if grep -q 'data: CANCEL' "${LLM_CTRL_LOG}"; then
+if grep -Fxq 'CANCEL' "${LLM_CTRL_LOG}"; then
   echo "PASS: LLM CANCEL observed"
   PASS_COUNT=$((PASS_COUNT + 1))
 else

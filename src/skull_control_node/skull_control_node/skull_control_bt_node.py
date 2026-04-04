@@ -876,6 +876,9 @@ class SkullControlBTNode(Node):
                 self._transition_eye(EyeState.THINKING, 'test_event_force_thinking')
 
         elif event == 'FORCE_SPEAKING':
+            # Reset the audio-chunk timestamp so the stall watchdog doesn't immediately
+            # fire and kick us back out of SPEAKING before the test can probe the gate.
+            self.blackboard.last_audio_chunk_ts = time.monotonic()
             self._transition_general(GeneralState.SPEAKING, 'test_event_force_speaking')
             self._transition_llm(LLMState.SPEAKING, 'test_event_force_speaking')
             self._transition_speech(SpeechState.SPEAKING, 'test_event_force_speaking')
