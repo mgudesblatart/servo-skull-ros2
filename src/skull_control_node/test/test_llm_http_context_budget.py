@@ -41,8 +41,9 @@ class _PublisherStub:
 
 
 class _HttpClientStub:
-    def __init__(self, output=None):
+    def __init__(self, output=None, outputs=None):
         self.output = output or '{"thoughts":"brief","tool_calls":[{"say_phrase":{"msg":"Short answer."}}]}'
+        self.outputs = list(outputs or [])
         self.reset_calls = 0
         self.chat_requests = []
 
@@ -52,23 +53,26 @@ class _HttpClientStub:
 
     def generate_chat(self, messages):
         self.chat_requests.append(messages)
+        if self.outputs:
+            return self.outputs.pop(0)
         return self.output
 
 
 @unittest.skipIf(IMPORT_ERROR is not None, f"ROS dependencies unavailable: {IMPORT_ERROR}")
 class TestLlmHttpContextBudget(unittest.TestCase):
-    def _make_node(self, *, max_window_tokens=240, max_turns=1, reset_threshold_tokens=120):
+    def _make_node(self, *, max_window_tokens=240, max_turns=1, reset_threshold_tokens=120, enable_llm_summary_refinement=False, http_outputs=None):
         node = LLMAgentHttpNode.__new__(LLMAgentHttpNode)
         node._history_lock = threading.Lock()
         node._max_window_tokens = max_window_tokens
         node._budget_warning_level = "ok"
+        node._enable_llm_summary_refinement = enable_llm_summary_refinement
         node._conversation_buffer = ConversationBuffer(
             system_prompt="System prompt",
             max_turns=max_turns,
             max_window_tokens=max_window_tokens,
             reset_threshold_tokens=reset_threshold_tokens,
         )
-        node.http_client = _HttpClientStub()
+        node.http_client = _HttpClientStub(outputs=http_outputs)
         node.status_pub = _PublisherStub()
         node.tts_pub = _PublisherStub()
         node.cancel_requested = threading.Event()
@@ -143,6 +147,95 @@ class TestLlmHttpContextBudget(unittest.TestCase):
         self.assertEqual(node.http_client.reset_calls, 1)
         self.assertEqual(node.tts_pub.messages[-1]["data"], "Short answer.")
         self.assertTrue(node.http_client.chat_requests)
+
+    def test_refine_summary_state_with_llm_returns_normalized_state(self):
+        node = self._make_node(
+            enable_llm_summary_refinement=True,
+            http_outputs=[
+                '{"user_preferences":["prefers concise responses"],'
+                '"active_topics":["fertilizer types"],'
+                '"open_loops":["What should I use for tomatoes?"],'
+                '"assistant_commitments":["I can explain the main fertilizer categories."],'
+                '"known_facts":["Tomatoes usually like balanced feed with enough potassium."]}'
+            ],
+        )
+
+        refined = node._refine_summary_state_with_llm(
+            prior_summary_state={},
+            recent_turns=[("Explain fertilizer types briefly.", "{\"thoughts\":\"x\",\"tool_calls\":[]}")],
+            heuristic_summary_state={
+                "user_preferences": ["prefers concise responses"],
+                "active_topics": ["fertilizer types"],
+                "open_loops": [],
+                "assistant_commitments": [],
+                "known_facts": [],
+            },
+        )
+
+        self.assertIsNotNone(refined)
+        self.assertIn("fertilizer types", refined["active_topics"])
+        self.assertEqual(len(node.status_pub.messages), 0)
+
+    def test_refine_summary_state_with_llm_falls_back_on_invalid_json(self):
+        node = self._make_node(enable_llm_summary_refinement=True, http_outputs=["not json"])
+
+        refined = node._refine_summary_state_with_llm(
+            prior_summary_state={},
+            recent_turns=[],
+            heuristic_summary_state={
+                "user_preferences": ["prefers concise responses"],
+                "active_topics": [],
+                "open_loops": [],
+                "assistant_commitments": [],
+                "known_facts": [],
+            },
+        )
+
+        self.assertIsNone(refined)
+        self.assertEqual(node.status_pub.messages[-1]["reason"], "context_summary_refine_invalid")
+
+    def test_prompt_callback_uses_llm_refined_summary_when_enabled(self):
+        node = self._make_node(
+            max_window_tokens=220,
+            max_turns=1,
+            reset_threshold_tokens=140,
+            enable_llm_summary_refinement=True,
+            http_outputs=[
+                '{"user_preferences":["prefers concise responses"],'
+                '"active_topics":["context exhaustion"],'
+                '"open_loops":["Explain the current plan briefly."],'
+                '"assistant_commitments":["I can explain the current plan."],'
+                '"known_facts":["We summarize, then reset."]}',
+                '{"thoughts":"brief","tool_calls":[{"say_phrase":{"msg":"Short answer."}}]}'
+            ],
+        )
+        node._conversation_buffer.add_turn(
+            "Tell me about context exhaustion in detail.",
+            '{"thoughts":"analysis","tool_calls":[{"say_phrase":{"msg":"We summarize, then reset."}}]}',
+        )
+        node._conversation_buffer.add_turn(
+            "What happens next?",
+            '{"thoughts":"analysis","tool_calls":[{"say_phrase":{"msg":"I can explain the current plan."}}]}',
+        )
+
+        msg = SimpleNamespace(
+            channel="human",
+            source="stt",
+            type="transcript",
+            event="human_transcript",
+            urgency="medium",
+            ts=1.0,
+            text="Explain the current plan briefly.",
+            payload_json="{}",
+        )
+
+        node.prompt_callback(msg)
+
+        history = node._conversation_buffer.get_history_for_prompt()
+        self.assertIn("context exhaustion", history[1]["content"])
+        self.assertEqual(node.http_client.reset_calls, 1)
+        self.assertEqual(len(node.http_client.chat_requests), 2)
+        self.assertEqual(node.tts_pub.messages[-1]["data"], "Short answer.")
 
 
 if __name__ == "__main__":

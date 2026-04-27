@@ -104,6 +104,12 @@ def generate_launch_description():
         launch_arguments={
             'axllm_base_url': LaunchConfiguration('axllm_base_url'),
             'config_path': default_http_config,
+            'disable_thinking': LaunchConfiguration('disable_thinking'),
+            'summary_refinement_disable_thinking': LaunchConfiguration('summary_refinement_disable_thinking'),
+            'summary_refinement_max_output_tokens': LaunchConfiguration('summary_refinement_max_output_tokens'),
+            'max_history_turns': LaunchConfiguration('max_history_turns'),
+            'max_window_tokens': LaunchConfiguration('max_window_tokens'),
+            'enable_llm_summary_refinement': LaunchConfiguration('enable_llm_summary_refinement'),
         }.items(),
     )
 
@@ -226,7 +232,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'axllm_model_dir',
-            default_value='/home/murray/models/Qwen3-1.7B',
+            default_value='/home/murray/models/Qwen3-1.7B-ax650-2k',
             description='Model directory used by native axllm serve.',
         ),
         DeclareLaunchArgument(
@@ -253,6 +259,36 @@ def generate_launch_description():
             'axllm_ready_timeout',
             default_value='60.0',
             description='Seconds to wait for axllm /v1/models readiness before aborting launch.',
+        ),
+        DeclareLaunchArgument(
+            'max_history_turns',
+            default_value='8',
+            description='Number of user/assistant exchange pairs to keep in rolling context for llm_agent_http_node.',
+        ),
+        DeclareLaunchArgument(
+            'disable_thinking',
+            default_value='true',
+            description='If true, appends a no-think instruction to llm_agent_http_node requests.',
+        ),
+        DeclareLaunchArgument(
+            'summary_refinement_disable_thinking',
+            default_value='false',
+            description='If true, disable thinking for summary-refinement LLM calls.',
+        ),
+        DeclareLaunchArgument(
+            'summary_refinement_max_output_tokens',
+            default_value='384',
+            description='Max output tokens for summary-refinement LLM calls.',
+        ),
+        DeclareLaunchArgument(
+            'max_window_tokens',
+            default_value='1600',
+            description='Approximate token budget for system prompt + summary + recent turns in llm_agent_http_node.',
+        ),
+        DeclareLaunchArgument(
+            'enable_llm_summary_refinement',
+            default_value='true',
+            description='If true, attempt one extra LLM call during context reset to refine the structured summary.',
         ),
 
         # Ordered startup chain:

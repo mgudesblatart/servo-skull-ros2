@@ -7,7 +7,7 @@ Usage:
   ./scripts/start_axllm_native_serve.sh [options]
 
 Options:
-  --model-dir <path>            Model directory (default: /home/murray/models/Qwen3-1.7B)
+  --model-dir <path>            Model directory (default: /home/murray/models/Qwen3-1.7B-ax650-2k)
   --port <port>                 HTTP port for axllm serve (default: 8081)
   --axllm-bin <path>            axllm binary path (default: /home/murray/projects/ax-llm/build_native/axllm)
   --config-path <path>          Model config path (default: <model-dir>/config.json)
@@ -15,7 +15,7 @@ Options:
 EOF
 }
 
-MODEL_DIR="/home/murray/models/Qwen3-1.7B"
+MODEL_DIR="/home/murray/models/Qwen3-1.7B-ax650-2k"
 PORT="8081"
 AXLLM_BIN="/home/murray/projects/ax-llm/build_native/axllm"
 

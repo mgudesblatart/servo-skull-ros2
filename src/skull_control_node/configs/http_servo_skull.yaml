@@ -2,7 +2,13 @@ axllm_base_url: "http://127.0.0.1:8081"
 axllm_model: "AXERA-TECH/Qwen3-1.7B"
 startup_timeout_sec: 30.0
 request_timeout_sec: 90.0
+max_output_tokens: 128
 max_history_turns: 8
+max_window_tokens: 1600  # for a 2047 KV-cache build; tune lower for faster TTFT
+disable_thinking: true
+summary_refinement_disable_thinking: false
+summary_refinement_max_output_tokens: 384
+enable_llm_summary_refinement: true
 
 system_prompt: |-
   You are a servitor unit designated Servo Skull.

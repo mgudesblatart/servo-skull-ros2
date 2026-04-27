@@ -44,6 +44,21 @@ ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
 # Override backend URL consumed by llm_agent_http
 ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
   axllm_base_url:=http://127.0.0.1:8081
+
+# Run Qwen1.7B in no-think mode
+ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
+  disable_thinking:=true
+
+# Keep no-think for normal turns, but allow thinking and more tokens for summary refinement
+ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
+  disable_thinking:=true \
+  summary_refinement_disable_thinking:=false \
+  summary_refinement_max_output_tokens:=384
+
+# Force Task 9 context reset paths to trigger sooner during hardware testing
+ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
+  max_window_tokens:=128 \
+  enable_llm_summary_refinement:=true
 ```
 
 **Launch arguments:**
@@ -53,12 +68,18 @@ ros2 launch servo_skull_launch test_full_audio_pipeline.launch.py \
 | `mic_device` | `-1` | microphone_node device index (-1 = PortAudio default) |
 | `speaker_device` | `""` | speaker_node device (int index or string; empty = auto-detect USB) |
 | `axllm_startup_script` | `/home/murray/projects/servo-skull/scripts/start_axllm_native_serve.sh` | Native backend startup wrapper |
-| `axllm_model_dir` | `/home/murray/models/Qwen3-1.7B` | Model directory for `axllm serve` |
+| `axllm_model_dir` | `/home/murray/models/Qwen3-1.7B-ax650-2k` | Model directory for `axllm serve` |
 | `axllm_port` | `8081` | Native backend port |
 | `axllm_bin` | `/home/murray/projects/ax-llm/build_native/axllm` | Native `axllm` binary path |
 | `axllm_config_path` | `""` | Optional `config.json` override for startup script |
 | `axllm_base_url` | `http://127.0.0.1:8081` | URL used by `llm_agent_http_node` |
 | `axllm_ready_timeout` | `60.0` | Seconds to wait for `/v1/models` readiness |
+| `disable_thinking` | `true` | If true, appends a no-think instruction to each llm_agent_http request |
+| `summary_refinement_disable_thinking` | `false` | Controls thinking mode only for summary-refinement calls during reset |
+| `summary_refinement_max_output_tokens` | `384` | Max output tokens for summary-refinement calls |
+| `max_history_turns` | `8` | Rolling conversation turn count used by `llm_agent_http_node` |
+| `max_window_tokens` | `1600` | Approximate context budget before summary/reset logic triggers |
+| `enable_llm_summary_refinement` | `true` | Enables one-shot LLM refinement of structured summary during reset |
 
 ---
 
@@ -132,3 +153,4 @@ source install/setup.bash
 - `JACK_NO_START_SERVER=1` is set in the full pipeline launch to prevent spurious JACK audio server errors on systems without JACK installed.
 - `PYTHONPATH` is extended to include the venv site-packages at launch time. This is necessary because ROS2 launch processes don't inherit the activated venv.
 - All nodes write their output to `screen` so you can see them in the terminal. Redirect with `output:=log` if you prefer quieter launches.
+- Evaluation note: `scripts/evaluate_axllm_server.py` strict JSON scoring now tolerates malformed think-tag wrappers by sanitizing think tags and extracting the first decodable top-level JSON object before schema checks.

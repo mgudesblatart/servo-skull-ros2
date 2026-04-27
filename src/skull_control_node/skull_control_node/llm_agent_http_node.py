@@ -54,6 +54,16 @@ _JSON_CONTRACT_HINT = (
     'Use say_phrase when speaking is needed.'
 )
 
+_SUMMARY_REFINEMENT_HINT = (
+    'Return JSON only with keys: "user_preferences", "active_topics", "open_loops", '
+    '"assistant_commitments", and "known_facts". Each value must be an array of short strings. '
+    'Do not invent facts. Keep only the most important durable context.'
+)
+
+_NO_THINK_EXCERPT = (
+    "Do not include <think> blocks. Return only the final JSON object.\n/no_think"
+)
+
 
 class LLMAgentHttpNode(Node):
     """HTTP-backed LLM agent node with rolling conversation history."""
@@ -69,6 +79,13 @@ class LLMAgentHttpNode(Node):
     # Valid envelope field values
     _VALID_CHANNELS = {"human", "system", "mixed"}
     _VALID_URGENCIES = {"low", "medium", "high"}
+    _SUMMARY_FIELDS = (
+        "user_preferences",
+        "active_topics",
+        "open_loops",
+        "assistant_commitments",
+        "known_facts",
+    )
 
     def __init__(self) -> None:
         super().__init__("llm_agent_http_node")
@@ -91,7 +108,22 @@ class LLMAgentHttpNode(Node):
         )
         self._max_window_tokens = int(
             self.get_parameter("max_window_tokens").value
-            or config.get("max_window_tokens", 1500)
+            or config.get("max_window_tokens", 1600)
+        )
+        self._disable_thinking = bool(
+            self.get_parameter("disable_thinking").value
+        )
+        self._summary_refinement_disable_thinking = bool(
+            self.get_parameter("summary_refinement_disable_thinking").value
+        )
+        self._summary_refinement_max_output_tokens = int(
+            self.get_parameter("summary_refinement_max_output_tokens").value
+            or config.get("summary_refinement_max_output_tokens", 384)
+        )
+        self._enable_llm_summary_refinement = bool(
+            self.get_parameter("enable_llm_summary_refinement").value
+            if self.has_parameter("enable_llm_summary_refinement")
+            else config.get("enable_llm_summary_refinement", True)
         )
         self._history_lock = threading.Lock()
         self._conversation_buffer = ConversationBuffer(
@@ -114,7 +146,11 @@ class LLMAgentHttpNode(Node):
             f"LLM Agent HTTP Node starting (will poll for server readiness). "
             f"base_url={self.http_client.base_url}, "
             f"max_history_turns={self._max_history_turns}, "
-            f"max_window_tokens={self._max_window_tokens}."
+            f"max_window_tokens={self._max_window_tokens}, "
+            f"disable_thinking={self._disable_thinking}, "
+            f"summary_refinement_disable_thinking={self._summary_refinement_disable_thinking}, "
+            f"summary_refinement_max_output_tokens={self._summary_refinement_max_output_tokens}, "
+            f"enable_llm_summary_refinement={self._enable_llm_summary_refinement}."
         )
         self._readiness_timer = self.create_timer(
             0.5, self._poll_server_readiness, callback_group=self.callback_group
@@ -129,9 +165,14 @@ class LLMAgentHttpNode(Node):
         self.declare_parameter("axllm_base_url", "http://127.0.0.1:8081")
         self.declare_parameter("axllm_model", "AXERA-TECH/Qwen3-1.7B")
         self.declare_parameter("startup_timeout_sec", 30.0)
-        self.declare_parameter("request_timeout_sec", 60.0)
+        self.declare_parameter("request_timeout_sec", 90.0)
+        self.declare_parameter("max_output_tokens", 128)
         self.declare_parameter("max_history_turns", 8)
-        self.declare_parameter("max_window_tokens", 1500)
+        self.declare_parameter("max_window_tokens", 1600)
+        self.declare_parameter("disable_thinking", True)
+        self.declare_parameter("summary_refinement_disable_thinking", False)
+        self.declare_parameter("summary_refinement_max_output_tokens", 384)
+        self.declare_parameter("enable_llm_summary_refinement", True)
         self.declare_parameter("system_prompt", "")
 
     def _load_config(self) -> dict:
@@ -160,17 +201,23 @@ class LLMAgentHttpNode(Node):
         )
         request_timeout = float(
             self.get_parameter("request_timeout_sec").value
-            or config.get("request_timeout_sec", 60.0)
+            or config.get("request_timeout_sec", 90.0)
+        )
+        max_output_tokens = int(
+            self.get_parameter("max_output_tokens").value
+            or config.get("max_output_tokens", 128)
         )
         self.get_logger().info(
             f"HTTP backend: base_url={base_url}, model={model}, "
-            f"startup_timeout={startup_timeout}s, request_timeout={request_timeout}s"
+            f"startup_timeout={startup_timeout}s, request_timeout={request_timeout}s, "
+            f"max_output_tokens={max_output_tokens}"
         )
         return AxllmHttpClient(
             base_url=base_url,
             model=model,
             startup_timeout_sec=startup_timeout,
             request_timeout_sec=request_timeout,
+            max_output_tokens=max_output_tokens,
         )
 
     def _setup_subscriptions(self) -> None:
@@ -272,9 +319,18 @@ class LLMAgentHttpNode(Node):
 
     def _perform_context_reset(self, pending_user_content: str) -> None:
         with self._history_lock:
-            summary = self._conversation_buffer.generate_reset_summary()
+            summary_state = self._conversation_buffer.snapshot_summary_state()
+            prior_summary_state = self._conversation_buffer.summary_state
+            recent_turns = self._conversation_buffer.recent_turns
+            summary_text = self._conversation_buffer.generate_reset_summary()
             remaining_before = self._conversation_buffer.get_remaining_budget(pending_user_content)
-            self._conversation_buffer.reset_with_summary(summary)
+            refined_summary_state = self._refine_summary_state_with_llm(
+                prior_summary_state,
+                recent_turns,
+                summary_state,
+            )
+            final_summary_state = refined_summary_state or summary_state
+            self._conversation_buffer.reset_with_summary(final_summary_state)
             remaining_after = self._conversation_buffer.get_remaining_budget(pending_user_content)
 
         self._publish_status(
@@ -290,7 +346,8 @@ class LLMAgentHttpNode(Node):
             detail=(
                 f"remaining_before={remaining_before};"
                 f"remaining_after={remaining_after};"
-                f"summary_seeded={'yes' if bool(summary) else 'no'};"
+                f"summary_seeded={'yes' if bool(summary_text) else 'no'};"
+                f"summary_refined={'yes' if refined_summary_state is not None else 'no'};"
                 f"backend_reset_ok={backend_reset_ok}"
             ),
         )
@@ -300,6 +357,122 @@ class LLMAgentHttpNode(Node):
             f"backend_reset_ok={backend_reset_ok}"
         )
         self._publish_budget_status(remaining_after)
+
+    def _build_summary_refinement_messages(
+        self,
+        prior_summary_state: dict,
+        recent_turns: list[tuple[str, str]],
+        heuristic_summary_state: dict,
+    ) -> list[dict]:
+        turn_payload = [
+            {
+                "user": user_content,
+                "assistant": assistant_content,
+            }
+            for user_content, assistant_content in recent_turns
+        ]
+        prompt = {
+            "existing_summary": prior_summary_state,
+            "recent_turns": turn_payload,
+            "heuristic_summary": heuristic_summary_state,
+        }
+        user_content = json.dumps(prompt, ensure_ascii=False, separators=(",", ":"))
+        user_content = self._apply_thinking_mode(
+            user_content,
+            disable_thinking=self._summary_refinement_disable_thinking,
+        )
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You compress conversation state for a robot assistant. "
+                    + _SUMMARY_REFINEMENT_HINT
+                ),
+            },
+            {
+                "role": "user",
+                "content": user_content,
+            },
+        ]
+
+    @staticmethod
+    def _extract_first_json_object(raw_response: str) -> dict | None:
+        """Extract first top-level JSON object from model text, tolerating think noise."""
+        sanitized = re.sub(r"<think>.*?</think>", "", raw_response or "", flags=re.DOTALL | re.IGNORECASE)
+        sanitized = re.sub(r"</?think>", "", sanitized, flags=re.IGNORECASE).strip()
+        if not sanitized:
+            return None
+
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(sanitized):
+            if char != "{":
+                continue
+            try:
+                candidate, _ = decoder.raw_decode(sanitized[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                return candidate
+        return None
+
+    def _parse_summary_refinement_response(self, raw_response: str) -> dict | None:
+        parsed = self._extract_first_json_object(raw_response)
+        if parsed is None:
+            return None
+
+        normalized = self._conversation_buffer._normalize_summary_state(parsed)
+        if not any(normalized[field] for field in self._SUMMARY_FIELDS):
+            return None
+        return normalized
+
+    def _refine_summary_state_with_llm(
+        self,
+        prior_summary_state: dict,
+        recent_turns: list[tuple[str, str]],
+        heuristic_summary_state: dict,
+    ) -> dict | None:
+        if not self._enable_llm_summary_refinement:
+            return None
+        if not any(heuristic_summary_state.get(field) for field in self._SUMMARY_FIELDS):
+            return None
+
+        try:
+            messages = self._build_summary_refinement_messages(
+                prior_summary_state,
+                recent_turns,
+                heuristic_summary_state,
+            )
+            raw_response = self.http_client.generate_chat(
+                messages,
+                max_output_tokens=self._summary_refinement_max_output_tokens,
+            )
+        except Exception as error:
+            self._publish_status(
+                "warning",
+                reason="context_summary_refine_failed",
+                detail=str(error),
+            )
+            self.get_logger().warning(f"LLM summary refinement failed before reset: {error}")
+            return None
+
+        refined = self._parse_summary_refinement_response(raw_response)
+        if refined is None:
+            self._publish_status(
+                "warning",
+                reason="context_summary_refine_invalid",
+                detail=self._compact_detail(raw_response),
+            )
+            self.get_logger().warning("LLM summary refinement returned invalid JSON; using heuristic summary.")
+            return None
+
+        return refined
+
+    @staticmethod
+    def _compact_detail(text: str, max_chars: int = 180) -> str:
+        cleaned = re.sub(r"\s+", " ", (text or "").strip())
+        if len(cleaned) <= max_chars:
+            return cleaned
+        return cleaned[: max_chars - 3].rstrip() + "..."
 
     # -----------------------------------------------------------------------
     # Envelope helpers
@@ -344,7 +517,7 @@ class LLMAgentHttpNode(Node):
         }
 
     @staticmethod
-    def _build_user_content(envelope: dict) -> str:
+    def _build_user_content_raw(envelope: dict) -> str:
         """Format the envelope into a natural user-turn content string."""
         parts = []
         if envelope["text"]:
@@ -362,6 +535,15 @@ class LLMAgentHttpNode(Node):
             meta += f" payload={json.dumps(envelope['payload'], separators=(',', ':'))}"
         parts.insert(0, f"System context: {meta}")
         return " ".join(parts) + f"\n\n{_JSON_CONTRACT_HINT}"
+
+    def _apply_thinking_mode(self, content: str, disable_thinking: bool | None = None) -> str:
+        text = (content or "").strip()
+        should_disable = self._disable_thinking if disable_thinking is None else bool(disable_thinking)
+        if not should_disable:
+            return text
+        if _NO_THINK_EXCERPT in text:
+            return text
+        return f"{text}\n\n{_NO_THINK_EXCERPT}".strip()
 
     @staticmethod
     def _normalize_assistant_history_contract(parsed: dict, spoken_phrases: list[str]) -> str:
@@ -465,7 +647,8 @@ class LLMAgentHttpNode(Node):
                     f"Silently acking non-human envelope (event={envelope['event']})."
                 )
                 return
-        user_content = self._build_user_content(envelope)
+        user_content = self._build_user_content_raw(envelope)
+        user_content = self._apply_thinking_mode(user_content)
         remaining_budget = self._conversation_buffer.get_remaining_budget(user_content)
         self._publish_budget_status(remaining_budget)
         if self._conversation_buffer.should_reset(user_content):

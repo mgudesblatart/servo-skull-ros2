@@ -29,11 +29,13 @@ class AxllmHttpClient:
         model: str,
         startup_timeout_sec: float = 30.0,
         request_timeout_sec: float = 60.0,
+        max_output_tokens: int = 128,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model.strip() or "default"
         self.startup_timeout_sec = startup_timeout_sec
         self.request_timeout_sec = request_timeout_sec
+        self.max_output_tokens = max(1, int(max_output_tokens))
 
     def _request_json(
         self,
@@ -88,7 +90,7 @@ class AxllmHttpClient:
 
         raise TimeoutError(f"Timed out waiting for axllm HTTP readiness: {last_error}")
 
-    def generate_chat(self, messages: list[dict]) -> str:
+    def generate_chat(self, messages: list[dict], max_output_tokens: int | None = None) -> str:
         """
         Send a full OpenAI-style messages list and return the assistant reply text.
 
@@ -100,6 +102,11 @@ class AxllmHttpClient:
             "model": self.model,
             "messages": messages,
             "stream": False,
+            "max_tokens": (
+                max(1, int(max_output_tokens))
+                if max_output_tokens is not None
+                else self.max_output_tokens
+            ),
         }
 
         status, response = self._request_json("POST", "/v1/chat/completions", payload=payload)
@@ -128,6 +135,7 @@ class AxllmHttpClient:
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
+            "max_tokens": self.max_output_tokens,
         }
 
         status, response = self._request_json("POST", "/v1/chat/completions", payload=payload)

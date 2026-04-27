@@ -35,9 +35,13 @@ Guardrails in current implementation:
 | `axllm_base_url` | `"http://127.0.0.1:8081"` | Base URL for `axllm serve` |
 | `axllm_model` | `"AXERA-TECH/Qwen3-1.7B"` | Model ID passed to `/v1/chat/completions` |
 | `startup_timeout_sec` | `30.0` | Startup readiness timeout |
-| `request_timeout_sec` | `60.0` | Per-request timeout |
+| `request_timeout_sec` | `90.0` | Per-request timeout |
+| `disable_thinking` | `true` | If true, appends a no-think instruction to each request (`/no_think`) |
+| `summary_refinement_disable_thinking` | `false` | Controls thinking mode only for summary-refinement calls during reset |
+| `summary_refinement_max_output_tokens` | `384` | Max output tokens reserved for summary-refinement calls |
 | `max_history_turns` | `8` | Rolling conversation history size |
-| `max_window_tokens` | `1500` | Approximate token budget for system prompt + summary + recent turns |
+| `max_window_tokens` | `1600` | Approximate token budget for system prompt + summary + recent turns |
+| `enable_llm_summary_refinement` | `true` | Tries one extra LLM call during reset to refine the structured summary before reseeding history |
 | `system_prompt` | `""` | Optional runtime override of config prompt |
 
 ---
@@ -81,8 +85,12 @@ axllm_base_url: "http://127.0.0.1:8081"
 axllm_model: "AXERA-TECH/Qwen3-1.7B"
 startup_timeout_sec: 30.0
 request_timeout_sec: 90.0
+disable_thinking: true
+summary_refinement_disable_thinking: false
+summary_refinement_max_output_tokens: 384
 max_history_turns: 8
-max_window_tokens: 1500
+max_window_tokens: 1600
+enable_llm_summary_refinement: true
 system_prompt: |-
   /no_think
   You are a servitor unit designated Servo Skull.
@@ -156,7 +164,7 @@ Backend readiness is checked via `/v1/models` before prompt traffic is accepted,
 
 Conversation history is kept as:
 - system prompt
-- compact summary of evicted older turns
+- deterministic structured summary of evicted older turns
 - recent turn window capped by `max_history_turns` and `max_window_tokens`
 
 When remaining budget falls too low, `llm_agent_http_node` now:
@@ -164,7 +172,23 @@ When remaining budget falls too low, `llm_agent_http_node` now:
 - performs a best-effort backend reset
 - reseeds history with a compact summary via `context_budget_reset`
 
-This is the current Task 9 context-management path; higher-quality summaries and user-facing reset UX are still separate work.
+Current summary fields are generated locally without extra LLM calls and include:
+- user preferences
+- active topics
+- open loops/questions
+- assistant commitments
+- known facts
+
+If `enable_llm_summary_refinement=true`, reset flow will make one extra LLM call using the structured summary state plus recent turns and attempt to refine that state before reseeding history. If refinement fails or returns invalid JSON, the deterministic summary is used as fallback.
+
+Summary-refinement parsing is tolerant of malformed think wrappers in model output:
+- paired `<think>...</think>` blocks are removed
+- stray `<think>` / `</think>` tags are removed
+- first decodable top-level JSON object is used
+
+This avoids false refinement failures when the model emits extra think markup but still returns valid JSON content.
+
+This is the current Task 9 context-management path; user-facing reset UX is still separate work.
 
 ---
 
@@ -192,6 +216,20 @@ Override config:
 ```bash
 ros2 launch skull_control_node llm_agent_http.launch.py \
   config_path:=/path/to/custom.yaml
+```
+
+Force Task 9 reset-path testing more aggressively:
+```bash
+ros2 launch skull_control_node llm_agent_http.launch.py \
+  max_window_tokens:=128 \
+  enable_llm_summary_refinement:=true
+```
+
+Run Qwen1.7B with explicit no-think mode:
+```bash
+ros2 launch skull_control_node llm_agent_http.launch.py \
+  axllm_model:=AXERA-TECH/Qwen3-1.7B \
+  disable_thinking:=true
 ```
 
 ### Skull control + person tracking + ESP32 test launch

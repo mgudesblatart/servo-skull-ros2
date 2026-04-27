@@ -61,7 +61,7 @@ ros2 launch servo_skull_launch axllm_native_backend.launch.py
 
 # Optional overrides
 ros2 launch servo_skull_launch axllm_native_backend.launch.py \
-  model_dir:=/home/murray/models/Qwen3-1.7B \
+  model_dir:=/home/murray/models/Qwen3-1.7B-ax650-2k \
   port:=8081 \
   axllm_bin:=/home/murray/projects/ax-llm/build_native/axllm
 ```
@@ -69,7 +69,7 @@ ros2 launch servo_skull_launch axllm_native_backend.launch.py \
 ```shell
 # Startup helper supports flags (no positional args)
 bash /home/murray/projects/servo-skull/scripts/start_axllm_native_serve.sh \
-  --model-dir /home/murray/models/Qwen3-1.7B \
+  --model-dir /home/murray/models/Qwen3-1.7B-ax650-2k \
   --port 8081 \
   --axllm-bin /home/murray/projects/ax-llm/build_native/axllm
 ```

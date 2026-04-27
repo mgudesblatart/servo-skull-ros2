@@ -40,13 +40,43 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'request_timeout_sec',
-            default_value='60.0',
+            default_value='90.0',
             description='Per-request HTTP timeout in seconds.',
+        ),
+        DeclareLaunchArgument(
+            'max_output_tokens',
+            default_value='128',
+            description='Maximum assistant output tokens per response.',
+        ),
+        DeclareLaunchArgument(
+            'disable_thinking',
+            default_value='true',
+            description='If true, appends a no-think instruction to each LLM request.',
+        ),
+        DeclareLaunchArgument(
+            'summary_refinement_disable_thinking',
+            default_value='false',
+            description='If true, disable thinking for summary-refinement LLM calls.',
+        ),
+        DeclareLaunchArgument(
+            'summary_refinement_max_output_tokens',
+            default_value='384',
+            description='Max output tokens for summary-refinement LLM calls.',
         ),
         DeclareLaunchArgument(
             'max_history_turns',
             default_value='8',
             description='Number of user/assistant exchange pairs to keep in rolling context.',
+        ),
+        DeclareLaunchArgument(
+            'max_window_tokens',
+            default_value='1600',
+            description='Approximate token budget for system prompt + summary + recent turns.',
+        ),
+        DeclareLaunchArgument(
+            'enable_llm_summary_refinement',
+            default_value='true',
+            description='If true, attempt one extra LLM call during context reset to refine the structured summary.',
         ),
         Node(
             package='skull_control_node',
@@ -60,7 +90,13 @@ def generate_launch_description():
                 'config_path': LaunchConfiguration('config_path'),
                 'startup_timeout_sec': LaunchConfiguration('startup_timeout_sec'),
                 'request_timeout_sec': LaunchConfiguration('request_timeout_sec'),
+                'max_output_tokens': LaunchConfiguration('max_output_tokens'),
+                'disable_thinking': LaunchConfiguration('disable_thinking'),
+                'summary_refinement_disable_thinking': LaunchConfiguration('summary_refinement_disable_thinking'),
+                'summary_refinement_max_output_tokens': LaunchConfiguration('summary_refinement_max_output_tokens'),
                 'max_history_turns': LaunchConfiguration('max_history_turns'),
+                'max_window_tokens': LaunchConfiguration('max_window_tokens'),
+                'enable_llm_summary_refinement': LaunchConfiguration('enable_llm_summary_refinement'),
             }],
         ),
     ])

@@ -15,6 +15,10 @@ For each case the script reports:
 - Whether tool-call behavior matched expectations
 
 Exit status is non-zero if any test fails.
+
+Cache behavior:
+- append (default): keeps one growing message list across cases to favor KV reuse.
+- isolated: sends each case as a fresh system+user request.
 """
 
 from __future__ import annotations
@@ -52,7 +56,11 @@ NODE_JSON_CONTRACT_EXCERPT = (
     'If speaking is appropriate, include tool_calls like [{"say_phrase": {"msg": "..."}}].'
 )
 THINK_BLOCK_PATTERN = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+THINK_TAG_PATTERN = re.compile(r"</?think>", re.IGNORECASE)
 REQUIRED_JSON_KEYS = {"thoughts", "tool_calls"}
+NO_THINK_EXCERPT = (
+    "Do not include <think> blocks. Return only the final JSON object.\n/no_think"
+)
 
 
 @dataclass(frozen=True)
@@ -114,6 +122,28 @@ def strip_think_blocks(text: str) -> str:
     return THINK_BLOCK_PATTERN.sub("", text).strip()
 
 
+def sanitize_for_strict_json(text: str) -> str:
+    """Drop known think wrappers/tags while preserving remaining payload text."""
+    stripped = strip_think_blocks(text)
+    stripped = THINK_TAG_PATTERN.sub("", stripped)
+    return stripped.strip()
+
+
+def extract_first_json_object(text: str) -> tuple[dict[str, Any] | None, str]:
+    """Return the first decodable top-level JSON object found in text."""
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            candidate, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict):
+            return candidate, ""
+    return None, "No top-level JSON object found after sanitization"
+
+
 def with_json_contract_excerpt(text: str) -> str:
     stripped = text.strip()
     if NODE_JSON_CONTRACT_EXCERPT in stripped:
@@ -121,21 +151,26 @@ def with_json_contract_excerpt(text: str) -> str:
     return f"{stripped} {NODE_JSON_CONTRACT_EXCERPT}".strip()
 
 
+def with_no_think_excerpt(text: str) -> str:
+    stripped = text.strip()
+    if NO_THINK_EXCERPT in stripped:
+        return stripped
+    return f"{stripped}\n\n{NO_THINK_EXCERPT}".strip()
+
+
 def request_chat_completion(
     *,
     base_url: str,
     model: str,
-    system_prompt: str,
-    user_content: str,
+    messages: list[dict[str, str]],
     timeout_sec: float,
+    max_tokens: int,
 ) -> tuple[float, str]:
-    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
-    messages.append({"role": "user", "content": user_content})
-
     payload = {
         "model": model,
         "messages": messages,
         "stream": False,
+        "max_tokens": max(1, int(max_tokens)),
     }
     request = urllib.request.Request(
         url=f"{base_url.rstrip('/')}/v1/chat/completions",
@@ -220,38 +255,63 @@ def probe_model(base_url: str, model: str, timeout_sec: float) -> tuple[bool, st
     return True, "ok"
 
 
+def reset_server(base_url: str, timeout_sec: float) -> tuple[bool, str]:
+    errors: list[str] = []
+    for path in ("/reset", "/api/reset"):
+        request = urllib.request.Request(
+            url=f"{base_url.rstrip('/')}{path}",
+            method="POST",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=min(timeout_sec, 5.0)) as response:
+                status = getattr(response, "status", 200)
+                response.read()
+                if status in (200, 204):
+                    return True, path
+                errors.append(f"{path}: HTTP {status}")
+        except Exception as error:
+            errors.append(f"{path}: {error}")
+
+    if not errors:
+        return False, "no reset endpoints attempted"
+    return False, "; ".join(errors)
+
+
 def evaluate_case(
     *,
     case: TestCase,
     base_url: str,
     model: str,
-    system_prompt: str,
+    messages: list[dict[str, str]],
     timeout_sec: float,
+    max_tokens: int,
     dump_raw: bool,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str]:
     elapsed_sec, raw_content = request_chat_completion(
         base_url=base_url,
         model=model,
-        system_prompt=system_prompt,
-        user_content=with_json_contract_excerpt(case.user_content),
+        messages=messages,
         timeout_sec=timeout_sec,
+        max_tokens=max_tokens,
     )
 
-    stripped = strip_think_blocks(raw_content)
+    stripped = sanitize_for_strict_json(raw_content)
     strict_json_ok = False
     strict_json_error = ""
     parsed_strict: dict[str, Any] | None = None
     strict_contract_ok = False
     strict_contract_error = ""
-    try:
-        parsed_candidate = json.loads(stripped)
-        if isinstance(parsed_candidate, dict):
-            parsed_strict = parsed_candidate
-            strict_json_ok = True
-        else:
-            strict_json_error = f"Top-level JSON was {type(parsed_candidate).__name__}, expected object"
-    except json.JSONDecodeError as error:
-        strict_json_error = str(error)
+    parsed_candidate, parse_error = extract_first_json_object(stripped)
+    if parsed_candidate is not None:
+        parsed_strict = parsed_candidate
+        strict_json_ok = True
+    else:
+        strict_json_error = parse_error
 
     if parsed_strict is not None:
         actual_keys = set(parsed_strict.keys())
@@ -299,7 +359,7 @@ def evaluate_case(
         result["stripped_content"] = stripped
         result["strict_json"] = parsed_strict
         result["parser_output"] = parsed_contract
-    return result
+    return result, raw_content
 
 
 def print_report(results: list[dict[str, Any]]) -> None:
@@ -349,6 +409,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config-path", default=str(DEFAULT_CONFIG_PATH), help="YAML config to load model/base URL defaults and system prompt")
     parser.add_argument("--system-prompt-file", default="", help="Optional plain-text file that overrides the system prompt")
     parser.add_argument("--timeout", type=float, default=90.0, help="HTTP timeout per call in seconds")
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=128,
+        help="Maximum completion tokens per request (sent as max_tokens).",
+    )
+    parser.add_argument(
+        "--cache-mode",
+        choices=("append", "isolated"),
+        default="append",
+        help="append keeps one growing message list across cases (KV-friendly); isolated sends each case fresh.",
+    )
+    parser.add_argument(
+        "--reset-before-run",
+        action="store_true",
+        help="Best-effort reset of server-side conversation/KV state via /reset or /api/reset before running cases.",
+    )
+    parser.add_argument(
+        "--disable-thinking",
+        action="store_true",
+        help="Append a no-think instruction to each user case prompt.",
+    )
     parser.add_argument("--only", default="", help="Comma-separated subset of case IDs to run")
     parser.add_argument("--dump-raw", action="store_true", help="Print raw and parsed payloads after the summary")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON instead of a text report")
@@ -393,17 +475,50 @@ def main() -> int:
         print(f"error: model preflight failed: {model_detail}", file=sys.stderr)
         return 2
 
+    reset_result = "not_requested"
+    if args.reset_before_run:
+        reset_ok, reset_detail = reset_server(base_url, args.timeout)
+        reset_result = "ok" if reset_ok else f"failed ({reset_detail})"
+        if not reset_ok:
+            print(
+                f"warning: pre-run reset requested but failed/unsupported: {reset_detail}",
+                file=sys.stderr,
+            )
+
     results: list[dict[str, Any]] = []
+    shared_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     for case in cases:
+        user_content = with_json_contract_excerpt(case.user_content)
+        if args.disable_thinking:
+            user_content = with_no_think_excerpt(user_content)
+        if args.cache_mode == "append":
+            # Hint the model to treat each case independently while preserving append-only history.
+            user_content = (
+                f"[Evaluation case: {case.case_id}] "
+                "Treat this as a new independent test case and answer only this request.\n"
+                f"{user_content}"
+            )
+            messages = list(shared_messages)
+            messages.append({"role": "user", "content": user_content})
+        else:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+
         try:
-            result = evaluate_case(
+            result, assistant_raw = evaluate_case(
                 case=case,
                 base_url=base_url,
                 model=model,
-                system_prompt=system_prompt,
+                messages=messages,
                 timeout_sec=args.timeout,
+                max_tokens=args.max_tokens,
                 dump_raw=args.dump_raw,
             )
+            if args.cache_mode == "append":
+                shared_messages.append({"role": "user", "content": user_content})
+                shared_messages.append({"role": "assistant", "content": assistant_raw})
         except Exception as error:
             result = {
                 "case_id": case.case_id,
@@ -429,6 +544,11 @@ def main() -> int:
                 {
                     "base_url": base_url,
                     "model": model,
+                    "cache_mode": args.cache_mode,
+                    "max_tokens": max(1, int(args.max_tokens)),
+                    "disable_thinking": bool(args.disable_thinking),
+                    "reset_before_run": bool(args.reset_before_run),
+                    "reset_result": reset_result,
                     "system_prompt_included": True,
                     "results": results,
                 },
@@ -438,6 +558,10 @@ def main() -> int:
     else:
         print(f"Base URL: {base_url}")
         print(f"Model:    {model}")
+        print(f"Cache mode: {args.cache_mode}")
+        print(f"Max tokens: {max(1, int(args.max_tokens))}")
+        print(f"Disable thinking: {bool(args.disable_thinking)}")
+        print(f"Reset before run: {bool(args.reset_before_run)} ({reset_result})")
         print("System prompt included: True")
         print_report(results)
         if args.dump_raw:

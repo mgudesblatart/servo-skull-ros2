@@ -20,6 +20,7 @@ class TestConversationBuffer(unittest.TestCase):
         history = buffer.get_history_for_prompt()
         self.assertEqual(history[0]["role"], "system")
         self.assertEqual(history[1]["role"], "system")
+        self.assertIn("Known facts", history[1]["content"])
         self.assertIn("reply 0", history[1]["content"])
         self.assertEqual(len([message for message in history if message["role"] == "user"]), 2)
         self.assertEqual(len([message for message in history if message["role"] == "assistant"]), 2)
@@ -38,6 +39,7 @@ class TestConversationBuffer(unittest.TestCase):
 
         self.assertLess(buffer.get_remaining_budget(), buffer.max_window_tokens)
         self.assertTrue(buffer.summary_text)
+        self.assertIn("Conversation summary:", buffer.summary_text)
 
     def test_generate_reset_summary_prefers_spoken_phrase(self):
         buffer = ConversationBuffer(max_turns=1, max_window_tokens=1000)
@@ -52,6 +54,7 @@ class TestConversationBuffer(unittest.TestCase):
 
         summary = buffer.generate_reset_summary()
         self.assertIn("I am Servo Skull.", summary)
+        self.assertIn("Open loops", summary)
         self.assertIn("What can you do?", summary)
 
     def test_reset_with_summary_reseeds_and_clears_turns(self):
@@ -60,7 +63,7 @@ class TestConversationBuffer(unittest.TestCase):
             "Who are you?",
             '{"thoughts":"identity","tool_calls":[{"say_phrase":{"msg":"I am Servo Skull."}}]}',
         )
-        reset_summary = buffer.generate_reset_summary()
+        reset_summary = buffer.snapshot_summary_state()
 
         buffer.reset_with_summary(reset_summary)
 
@@ -70,6 +73,23 @@ class TestConversationBuffer(unittest.TestCase):
         self.assertEqual(history[0]["content"], "System prompt")
         self.assertIn("I am Servo Skull.", history[1]["content"])
         self.assertGreaterEqual(buffer.get_remaining_budget("Next question"), 0)
+
+    def test_extracts_preferences_topics_and_commitments(self):
+        buffer = ConversationBuffer(max_turns=1, max_window_tokens=1000)
+        buffer.add_turn(
+            "Explain fertilizer types briefly and keep it short.",
+            '{"thoughts":"gardening","tool_calls":[{"say_phrase":{"msg":"I can explain the main fertilizer categories."}}]}',
+        )
+        buffer.add_turn(
+            "What should I use for tomatoes?",
+            '{"thoughts":"tomatoes","tool_calls":[{"say_phrase":{"msg":"Tomatoes usually like balanced feed with enough potassium."}}]}',
+        )
+
+        state = buffer.snapshot_summary_state()
+        self.assertIn("prefers concise responses", state["user_preferences"])
+        self.assertTrue(any("fertilizer" in topic for topic in state["active_topics"]))
+        self.assertTrue(any("I can explain" in item for item in state["assistant_commitments"]))
+        self.assertTrue(any("What should I use for tomatoes?" in item for item in state["open_loops"]))
 
 
 if __name__ == "__main__":
