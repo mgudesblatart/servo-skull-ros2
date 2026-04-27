@@ -32,6 +32,8 @@ REQUIRED_KEYS = {"thoughts", "tool_calls"}
 # Used to identify and skip runtime diagnostic lines in model output
 RUNTIME_LOG_LINE_PATTERN = re.compile(r"^\[[A-Z]\]\[")
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
+ROLE_PREFIX_PATTERN = re.compile(r"^(assistant|user|system)\s*:\s*", re.IGNORECASE)
+META_TAG_LINE_PATTERN = re.compile(r"^</?[a-zA-Z_][a-zA-Z0-9_-]*\s*/?>$")
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +156,12 @@ def _extract_plaintext_reply(raw_text: str) -> str:
         stripped = _strip_ansi(line).strip()
         if not stripped:
             continue
+        # Drop prompt-role scaffolding lines often leaked by chat runtimes.
+        if ROLE_PREFIX_PATTERN.match(stripped):
+            continue
+        # Drop standalone XML-style meta tags (for example <think>, <tool_call>).
+        if META_TAG_LINE_PATTERN.match(stripped):
+            continue
         if stripped == "prompt >>":
             continue
         if RUNTIME_LOG_LINE_PATTERN.match(stripped):
@@ -190,9 +198,11 @@ def parse_response(raw_text: str) -> dict[str, Any] | None:
     """
     candidates: list[str] = []
 
-    # Strip Qwen3 <think>...</think> block before any other processing
-    think_stripped = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+    # Strip reasoning/meta wrappers before any other processing.
+    # Keep JSON payloads that may appear between tags.
+    think_stripped = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL | re.IGNORECASE).strip()
     working_text = think_stripped if think_stripped else raw_text
+    working_text = re.sub(r"</?(think|tool_call)\s*/?>", "", working_text, flags=re.IGNORECASE)
     working_text = _repair_common_json_typos(working_text)
 
     # Strategy 1: strip markdown fences, try direct parse

@@ -479,16 +479,21 @@ class LLMAgentHttpNode(Node):
     # -----------------------------------------------------------------------
 
     def _parse_input_envelope(self, msg: LlmInput) -> dict | None:
-        channel = msg.channel
-        source = msg.source
-        msg_type = msg.type
-        urgency = msg.urgency
+        channel = str(msg.channel or "").strip().lower()
+        source = str(msg.source or "").strip()
+        msg_type = str(msg.type or "").strip().lower()
+        urgency = str(msg.urgency or "").strip().lower()
+        event = str(msg.event or "").strip().lower()
         ts = msg.ts
+        # Be tolerant of minor upstream envelope formatting issues.
         if channel not in self._VALID_CHANNELS:
+            if event == "human_transcript" and msg_type == "transcript" and source.lower() == "stt":
+                channel = "human"
+            else:
+                return None
+        if not source:
             return None
-        if not isinstance(source, str) or not source.strip():
-            return None
-        if not isinstance(msg_type, str) or not msg_type.strip():
+        if not msg_type:
             return None
         if urgency not in self._VALID_URGENCIES:
             return None
@@ -507,9 +512,9 @@ class LLMAgentHttpNode(Node):
                 payload = {}
         return {
             "channel": channel,
-            "source": source.strip(),
-            "type": msg_type.strip(),
-            "event": str(msg.event or "").strip(),
+            "source": source,
+            "type": msg_type,
+            "event": event,
             "urgency": urgency,
             "ts": float(ts),
             "text": text.strip() if isinstance(text, str) else "",
@@ -518,23 +523,22 @@ class LLMAgentHttpNode(Node):
 
     @staticmethod
     def _build_user_content_raw(envelope: dict) -> str:
-        """Format the envelope into a natural user-turn content string."""
-        parts = []
+        """Format envelope into a compact user-turn payload."""
         if envelope["text"]:
-            # Human transcript: natural text + compact schema reminder
             if envelope["channel"] == "human":
-                return f"{envelope['text']}\n\n{_JSON_CONTRACT_HINT}"
-            parts.append(f"text={envelope['text']}")
+                return (
+                    "Input Class: DIRECT_HUMAN\n"
+                    f"User transcript: {envelope['text']}\n\n"
+                    f"{_JSON_CONTRACT_HINT}"
+                )
 
-        # Non-human event: describe the context
-        meta = (
-            f"channel={envelope['channel']} source={envelope['source']} "
-            f"event={envelope['event'] or 'none'} urgency={envelope['urgency']}"
+        # System event fallback lane (currently disabled upstream, kept for future use).
+        system_request = envelope["text"] or (envelope.get("event") or "event_update")
+        return (
+            "Input Class: SYSTEM_EVENT\n"
+            f"System Request: {system_request}\n\n"
+            f"{_JSON_CONTRACT_HINT}"
         )
-        if envelope["payload"]:
-            meta += f" payload={json.dumps(envelope['payload'], separators=(',', ':'))}"
-        parts.insert(0, f"System context: {meta}")
-        return " ".join(parts) + f"\n\n{_JSON_CONTRACT_HINT}"
 
     def _apply_thinking_mode(self, content: str, disable_thinking: bool | None = None) -> str:
         text = (content or "").strip()
@@ -636,17 +640,18 @@ class LLMAgentHttpNode(Node):
             f"type={envelope['type']} event={envelope['event'] or 'none'} "
             f"source={envelope['source']}"
         )
-        # Only call the LLM for human input; silently ack system events
-        if channel != "human":
-            allow_tts = (
-                isinstance(envelope.get("payload"), dict)
-                and envelope["payload"].get("allow_tts") is True
+        # Minimal mode contract: only handle direct STT human transcripts.
+        if not (
+            channel == "human"
+            and envelope.get("source") == "stt"
+            and envelope.get("type") == "transcript"
+            and envelope.get("event") == "human_transcript"
+        ):
+            self.get_logger().debug(
+                f"Dropping non-human/non-STT envelope in minimal mode (channel={channel}, event={envelope['event']})."
             )
-            if not allow_tts:
-                self.get_logger().debug(
-                    f"Silently acking non-human envelope (event={envelope['event']})."
-                )
-                return
+            return
+
         user_content = self._build_user_content_raw(envelope)
         user_content = self._apply_thinking_mode(user_content)
         remaining_budget = self._conversation_buffer.get_remaining_budget(user_content)
@@ -692,9 +697,11 @@ class LLMAgentHttpNode(Node):
             if p
         ]
 
-        # Store the turn in history as normalized contract JSON to avoid
-        # drifting history format toward plain assistant utterances.
-        assistant_text = self._normalize_assistant_history_contract(parsed, phrases)
+        # Preserve the raw assistant payload in history so subsequent requests
+        # remain append-compatible for server-side KV cache reuse.
+        assistant_text = raw_response
+        if not isinstance(assistant_text, str) or not assistant_text.strip():
+            assistant_text = self._normalize_assistant_history_contract(parsed, phrases)
         if assistant_text.strip():
             self._append_turn(user_content, assistant_text)
 

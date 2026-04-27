@@ -8,7 +8,7 @@ Core skull behaviour package. Contains the HTTP-backed LLM agent and the BT-base
 
 ### `llm_agent_http_node`
 
-Listens for typed `LlmInput` envelopes, calls an OpenAI-compatible `axllm serve` backend over HTTP, parses the JSON contract response, and publishes TTS phrases.
+Listens for typed `LlmInput` envelopes, accepts only human STT transcript turns in minimal mode, calls an OpenAI-compatible `axllm serve` backend over HTTP, parses the JSON contract response, and publishes one short TTS phrase.
 
 Guardrails in current implementation:
 - Runtime/log contamination is filtered before speech publish.
@@ -23,7 +23,7 @@ Guardrails in current implementation:
 | Direction | Topic | Type | Notes |
 |---|---|---|---|
 | Subscribe | `/skull_control/llm_input` | `servo_skull_msgs/LlmInput` | Gated typed envelope from `skull_control_node` |
-| Subscribe | `/llm_agent/control` | `std_msgs/String` | `CANCEL` / `HALT` / `STOP` interrupt control |
+| Subscribe | `/llm_agent/control` | `std_msgs/String` | Optional external control (`CANCEL` / `HALT` / `STOP` / `RESET`) |
 | Publish | `/text_to_speech/text_input` | `std_msgs/String` | Phrase to speak aloud |
 | Publish | `/llm_agent/status` | `servo_skull_msgs/LlmStatus` | Runtime/health events for FSM recovery |
 
@@ -55,18 +55,19 @@ BT-based servo controller. Subscribes to tracked person data, selects a target u
 | Direction | Topic | Type | Notes |
 |---|---|---|---|
 | Subscribe | `/person_tracking/tracked_persons` | `servo_skull_msgs/TrackedPersons` | Face track data |
-| Subscribe | `/speech_to_text/transcript` | `std_msgs/String` | Raw STT input for FSM gating/interrupt detection |
+| Subscribe | `/speech_to_text/transcript` | `std_msgs/String` | Raw STT input for FSM gating and LLM handoff |
 | Subscribe | `/text_to_speech/text_input` | `std_msgs/String` | Verbal-response start hook for FSM transitions |
-| Subscribe | `/speaker/audio_output` | `servo_skull_msgs/AudioData` | Uses `is_last_chunk` for `tts_done` transition |
+| Subscribe | `/speaker/audio_output` | `servo_skull_msgs/AudioData` | Activity/stall fallback only; no longer authoritative for speech completion |
 | Subscribe | `/speaker_node/playback_timing` | `servo_skull_msgs/PlaybackTiming` | Dynamic echo-suppression timing from speaker |
+| Subscribe | `/speaker_node/playback_done` | `std_msgs/Float64` | Authoritative playback completion signal for `SPEAKING -> TRACKING/IDLE` |
 | Subscribe | `/llm_agent/status` | `servo_skull_msgs/LlmStatus` | LLM runtime health/status events |
 | Subscribe (optional) | `/skull_control/test_event` | `std_msgs/String` | Test-only FSM forcing hook (disabled by default) |
 | Publish | `skull_control/pan_tilt_cmd` | `geometry_msgs/Point` | Pan (x) / tilt (y) in [0–500] range |
 | Publish | `/skull_control/state_transition` | `servo_skull_msgs/StateTransition` | Typed transition trace (`from_state`, `to_state`, `event`, `ts`) |
 | Publish | `/skull_control/llm_input` | `servo_skull_msgs/LlmInput` | Typed event-aware envelope stream for LLM agent |
-| Publish | `/tts_node/control` | `std_msgs/String` | Interrupt control (`STOP`) |
-| Publish | `/speaker_node/control` | `std_msgs/String` | Interrupt control (`STOP`) |
-| Publish | `/llm_agent/control` | `std_msgs/String` | Interrupt control (`CANCEL`) |
+| Publish | `/tts_node/control` | `std_msgs/String` | Optional external control path |
+| Publish | `/speaker_node/control` | `std_msgs/String` | Optional external control path |
+| Publish | `/llm_agent/control` | `std_msgs/String` | Optional external control path |
 
 **Parameters:**
 
@@ -136,14 +137,8 @@ Fields:
 - `ts`: `time.time()` publish timestamp
 
 Current producers:
-- Human speech: `channel=human`, `type=transcript`, `source=stt`, `urgency=medium`.
-- System events: `channel=system`, `type=event` for:
-  - `person_detected`
-  - `no_motion_timeout`
-  - `no_speech_timeout`
-  - `low_interest_timeout`
-  - `interrupt_detected`
-  - `tts_done`
+- Human speech: `channel=human`, `type=transcript`, `source=stt`, `event=human_transcript`, `urgency=medium`.
+- BT system events are not forwarded to the LLM in minimal mode.
 
 Anti-spam behavior in BT node:
 - Per-event cooldown (5-12s depending on event).
@@ -152,7 +147,7 @@ Anti-spam behavior in BT node:
 Speech-loop suppression in BT node:
 - Short post-TTS blanket suppression window for STT (`POST_TTS_ECHO_SUPPRESS_SEC`).
 - Content-aware echo filtering: drops STT transcripts that closely match the most recent TTS phrase.
-- Interrupt tokens (`HALT` / `HOLD`) bypass suppression.
+- STT interrupt tokens are disabled in minimal mode to avoid echo-triggered false interrupts.
 
 ---
 

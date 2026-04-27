@@ -35,7 +35,7 @@ import sounddevice as sd
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from servo_skull_msgs.msg import AudioData, PlaybackTiming
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float64, String
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +145,7 @@ class SpeakerNode(Node):
         )
         self.ready_pub = self.create_publisher(Bool, "/speaker_node/ready", ready_qos)
         self.playback_timing_pub = self.create_publisher(PlaybackTiming, "/speaker_node/playback_timing", 10)
+        self.playback_done_pub = self.create_publisher(Float64, "/speaker_node/playback_done", 10)
 
     def _publish_playback_timing(self, duration_sec: float, channels: int):
         """Publish playback timing so skull_control can adapt STT echo suppression."""
@@ -157,6 +158,12 @@ class SpeakerNode(Node):
         msg.sample_rate = int(PLAYBACK_SAMPLE_RATE)
         msg.channels = int(channels)
         self.playback_timing_pub.publish(msg)
+
+    def _publish_playback_done(self):
+        """Publish a best-effort monotonic timestamp when stream playback has completed."""
+        msg = Float64()
+        msg.data = float(time.monotonic())
+        self.playback_done_pub.publish(msg)
 
     def _start_stream(self):
         """Open the persistent OutputStream. Called once at __init__ time."""
@@ -342,6 +349,7 @@ class SpeakerNode(Node):
             duration_sec = float(len(full_audio)) / float(PLAYBACK_SAMPLE_RATE)
             self._publish_playback_timing(duration_sec, channels)
             self.stream.write(full_audio)
+            self._publish_playback_done()
             self.get_logger().info(
                 f"Played utterance at {PLAYBACK_SAMPLE_RATE} Hz, "
                 f"{channels} channel(s) via persistent stream"

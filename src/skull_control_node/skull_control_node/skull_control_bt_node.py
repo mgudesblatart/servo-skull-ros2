@@ -43,7 +43,7 @@ from servo_skull_msgs.msg import (
     StateTransition,
     TrackedPersons,
 )
-from std_msgs.msg import String
+from std_msgs.msg import Float64, String
 
 # ---------------------------------------------------------------------------
 # Coordinate mapping: person-sensor pixel space -> ESP32 servo range
@@ -69,6 +69,8 @@ NO_SPEECH_TIMEOUT_SEC = 30.0
 DISPLAY_EMOTION_TIMEOUT_SEC = 2.5
 # Safety net: if speaker goes silent mid-utterance for this long, assume done
 SPEAKING_STALL_TIMEOUT_SEC = 8.0
+# Safety net: if speaker done event never arrives, force recovery.
+SPEAKING_HARD_TIMEOUT_SEC = 45.0
 # Safety net: if LLM never produces TTS while THINKING, recover FSM
 THINKING_STALL_TIMEOUT_SEC = 75.0
 
@@ -86,8 +88,9 @@ ECHO_TEXT_SIMILARITY_THRESHOLD = 0.55
 # Tail margin added beyond predicted playback end for room echo/driver latency
 PLAYBACK_ECHO_TAIL_SEC = 0.8
 
-# Spoken words that immediately halt/reset activity.
-INTERRUPT_TOKENS = {'HALT', 'HOLD', 'RESET'}
+# STT interrupt words are intentionally disabled in minimal mode to avoid
+# echo-triggered false interrupts from the speaker path.
+INTERRUPT_TOKENS = set()
 
 # ---------------------------------------------------------------------------
 # System event debounce: rate-limits how often we spam the LLM with events
@@ -168,6 +171,15 @@ class Blackboard:
 
         # Tracks the last received audio chunk timestamp for stall detection
         self.last_audio_chunk_ts = now
+        # Expected playback completion timestamp from speaker timing topic.
+        # 0.0 means no active playback estimate is available.
+        self.playback_expected_end_ts = 0.0
+        # Authoritative playback completion marker from speaker node.
+        self.playback_done_ts = 0.0
+        # True after we start SPEAKING and while waiting for speaker playback completion.
+        self.awaiting_speaker_done = False
+        # Timestamp when current SPEAKING utterance started.
+        self.speaking_started_ts = 0.0
 
         # Echo suppression state
         self.stt_echo_suppress_until_ts = 0.0  # Hard blackout window post-TTS
@@ -323,6 +335,12 @@ class SkullControlBTNode(Node):
             self.speaker_playback_timing_callback,
             10,
         )
+        self.speaker_playback_done_subscription = self.create_subscription(
+            Float64,
+            '/speaker_node/playback_done',
+            self.speaker_playback_done_callback,
+            10,
+        )
         self.llm_status_subscription = self.create_subscription(
             LlmStatus,
             '/llm_agent/status',
@@ -439,7 +457,9 @@ class SkullControlBTNode(Node):
     # -----------------------------------------------------------------------
 
     def _extract_interrupt_token(self, transcript: str):
-        """Return the interrupt token if the transcript starts with one, else None."""
+        """Return interrupt token if enabled; minimal mode keeps this disabled."""
+        if not INTERRUPT_TOKENS:
+            return None
         normalized = re.sub(r'[^A-Z ]', ' ', transcript.upper())
         words = [w for w in normalized.split() if w]
         if words and words[0] in INTERRUPT_TOKENS:
@@ -550,20 +570,9 @@ class SkullControlBTNode(Node):
         payload=None,
         text: str = '',
     ):
-        """Publish a system/FSM event to the LLM, subject to rate limiting."""
-        cooldown = SYSTEM_EVENT_COOLDOWN_SEC.get(event, SYSTEM_EVENT_COOLDOWN_DEFAULT_SEC)
-        if not self._should_publish_system_event(event, payload, cooldown):
-            return
-
-        self._publish_llm_envelope(
-            channel='system',
-            source=source,
-            msg_type='event',
-            event=event,
-            urgency=urgency,
-            text=text,
-            payload=payload,
-        )
+        """Minimal mode: disable BT system-event generation via LLM."""
+        _ = (source, event, urgency, payload, text)
+        return
 
     def _forward_transcript_to_llm(self, transcript: str):
         """Wrap a human speech transcript in a 'human' channel envelope and publish."""
@@ -621,6 +630,10 @@ class SkullControlBTNode(Node):
             return
 
         if verbal:
+            # Reset playback-completion estimate for the upcoming utterance.
+            self.blackboard.playback_expected_end_ts = 0.0
+            self.blackboard.awaiting_speaker_done = True
+            self.blackboard.speaking_started_ts = time.monotonic()
             self._transition_llm(LLMState.SPEAKING, 'llm_response_ready_verbal')
             self._transition_speech(SpeechState.SPEAKING, 'tts_started')
             self._transition_general(GeneralState.SPEAKING, 'llm_response_ready_verbal')
@@ -647,6 +660,9 @@ class SkullControlBTNode(Node):
             self.blackboard.stt_echo_suppress_until_ts,
             fallback_until,
         )
+        self.blackboard.playback_expected_end_ts = 0.0
+        self.blackboard.awaiting_speaker_done = False
+        self.blackboard.speaking_started_ts = 0.0
 
         self._transition_speech(SpeechState.IDLE, event)
         self._transition_llm(LLMState.IDLE, event)
@@ -692,29 +708,21 @@ class SkullControlBTNode(Node):
 
         Processing order:
           1. Ignore empty transcripts.
-          2. Check for interrupt tokens first (always processed, even while SPEAKING).
-          3. Apply echo suppression (time window + fuzzy text match).
-          4. Gate out transcripts while skull is already speaking.
-          5. Forward valid user input to LLM and transition to THINKING.
+          2. Apply echo suppression (time window + fuzzy text match).
+          3. Gate out transcripts while skull is already speaking.
+          4. Forward valid user input to LLM and transition to THINKING.
         """
         transcript = msg.data.strip()
         if not transcript:
             return
-
-        interrupt_token = self._extract_interrupt_token(transcript)
-        is_interrupt = interrupt_token is not None
         now = time.monotonic()
 
         # Echo suppression: discard mic bleed from our own speaker
-        if not is_interrupt and now < self.blackboard.stt_echo_suppress_until_ts:
+        if now < self.blackboard.stt_echo_suppress_until_ts:
             self.get_logger().info('STT ignored: within post-TTS echo suppression window.')
             return
-        if not is_interrupt and self._looks_like_tts_echo(transcript, now):
+        if self._looks_like_tts_echo(transcript, now):
             self.get_logger().info('STT ignored: matches recent TTS phrase (echo suppression).')
-            return
-
-        if is_interrupt:
-            self._handle_interrupt(interrupt_token)
             return
 
         # STT gate: don't process new user speech while already speaking
@@ -776,10 +784,15 @@ class SkullControlBTNode(Node):
             self.on_llm_response_ready(verbal=True, has_nonverbal=False)
 
     def speaker_audio_callback(self, msg: AudioData):
-        """Track audio chunk arrival; end SPEAKING state when the last chunk arrives."""
+        """Track speaker stream activity for stall detection and timing fallback."""
         self.blackboard.last_audio_chunk_ts = time.monotonic()
         if msg.is_last_chunk and self.blackboard.speech_state == SpeechState.SPEAKING:
-            self.on_tts_done()
+            # Only use chunk-based completion in legacy/fallback mode.
+            if (
+                not self.blackboard.awaiting_speaker_done
+                and self.blackboard.playback_expected_end_ts <= 0.0
+            ):
+                self.on_tts_done('tts_done_last_chunk')
 
     def speaker_playback_timing_callback(self, msg: PlaybackTiming):
         """
@@ -792,10 +805,24 @@ class SkullControlBTNode(Node):
 
         now = time.monotonic()
         expected_end = float(msg.expected_end_mono) if float(msg.expected_end_mono) > 0.0 else (now + duration_sec)
+        self.blackboard.playback_expected_end_ts = expected_end
 
         suppress_until = expected_end + PLAYBACK_ECHO_TAIL_SEC
         if suppress_until > self.blackboard.stt_echo_suppress_until_ts:
             self.blackboard.stt_echo_suppress_until_ts = suppress_until
+
+    def speaker_playback_done_callback(self, msg: Float64):
+        """Authoritative playback completion signal from speaker_node."""
+        try:
+            self.blackboard.playback_done_ts = float(msg.data)
+        except (TypeError, ValueError):
+            self.blackboard.playback_done_ts = time.monotonic()
+
+        if (
+            self.blackboard.speech_state == SpeechState.SPEAKING
+            and self.blackboard.awaiting_speaker_done
+        ):
+            self.on_tts_done('tts_done_playback_event')
 
     def llm_status_callback(self, msg: LlmStatus):
         """
@@ -966,9 +993,17 @@ class SkullControlBTNode(Node):
 
         # Safety net: if we're supposedly speaking but no audio has arrived, give up
         if self.blackboard.general_state == GeneralState.SPEAKING:
-            if (now - self.blackboard.last_audio_chunk_ts) >= SPEAKING_STALL_TIMEOUT_SEC:
-                self.get_logger().warning('SPEAKING stall detected; forcing speech completion.')
-                self.on_tts_done('speaking_stall_timeout')
+            if self.blackboard.awaiting_speaker_done:
+                if (now - self.blackboard.speaking_started_ts) >= SPEAKING_HARD_TIMEOUT_SEC:
+                    self.get_logger().warning('SPEAKING hard-timeout detected; forcing speech completion.')
+                    self.on_tts_done('speaking_hard_timeout')
+            else:
+                expected_end = self.blackboard.playback_expected_end_ts
+                if expected_end > 0.0 and now >= expected_end:
+                    self.on_tts_done('tts_done_playback_complete')
+                elif expected_end <= 0.0 and (now - self.blackboard.last_audio_chunk_ts) >= SPEAKING_STALL_TIMEOUT_SEC:
+                    self.get_logger().warning('SPEAKING stall detected; forcing speech completion.')
+                    self.on_tts_done('speaking_stall_timeout')
 
         # Safety net: if LLM stalled and no TTS start arrives, recover from THINKING
         if self.blackboard.general_state == GeneralState.THINKING:

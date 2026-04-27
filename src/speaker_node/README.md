@@ -16,6 +16,7 @@ Python ROS2 node. Receives `AudioData` messages and plays them through a persist
 | Subscribe | `/speaker_node/control` | `std_msgs/String` | `STOP`/`CANCEL`/`HALT` for immediate playback abort |
 | Publish | `/speaker_node/ready` | `std_msgs/Bool` | Latched; `true` once OutputStream is open and playback thread is running |
 | Publish | `/speaker_node/playback_timing` | `servo_skull_msgs/PlaybackTiming` | Playback duration/end estimate for adaptive STT echo suppression |
+| Publish | `/speaker_node/playback_done` | `std_msgs/Float64` | Monotonic timestamp emitted after `stream.write(...)` returns (actual playback completion) |
 
 **Parameters:**
 
@@ -72,3 +73,4 @@ ros2 run speaker_node speaker_node
 - `JACK_NO_START_SERVER=1` is set by the full pipeline launch to suppress JACK audio daemon errors on systems without JACK. If running the node in isolation and you see JACK errors, `export JACK_NO_START_SERVER=1` before launching.
 - The node accumulates all chunks until `is_last_chunk=true`, then writes one full utterance to the stream.
 - Before each `stream.write(full_audio)`, the node publishes `/speaker_node/playback_timing` so `skull_control_node` can set dynamic echo-suppression windows.
+- After `stream.write(full_audio)` returns, the node publishes `/speaker_node/playback_done` so FSM completion can be tied to real playback end instead of upstream chunk timing.

@@ -38,6 +38,35 @@ class TestResponseParser(unittest.TestCase):
             ["Good evening! Is there anything you would like to talk about or ask about?"],
         )
 
+    def test_parse_json_with_tool_call_tag_wrapper(self):
+        raw = (
+            "assistant:<think>\n"
+            "</think>\n"
+            "<tool_call>\n"
+            "{\"thoughts\":\"x\",\"tool_calls\":[{\"say_phrase\":{\"msg\":\"hello\"}}]}\n"
+            "</tool_call>"
+        )
+        parsed = parse_response(raw)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(extract_say_phrase_calls(parsed), ["hello"])
+
+    def test_fallback_ignores_role_and_meta_tag_lines(self):
+        raw = (
+            "system:You are a robotic assistant.\n"
+            "assistant:<think>\n"
+            "</think>\n"
+            "<tool_call>\n"
+            "Pardon, Master. Please repeat that.\n"
+            "</tool_call>\n"
+            "prompt >>\n"
+        )
+        parsed = parse_response(raw)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(
+            extract_say_phrase_calls(parsed),
+            ["Pardon, Master. Please repeat that."],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

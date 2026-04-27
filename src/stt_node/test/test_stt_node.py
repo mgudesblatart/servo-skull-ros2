@@ -8,6 +8,7 @@ import os
 import sys
 import threading
 import queue
+from types import SimpleNamespace
 
 import rclpy
 from rclpy.node import Node
@@ -235,6 +236,34 @@ class TestSTTNode(unittest.TestCase):
                 self.assertIn("model fail", str(e))
             else:
                 self.fail("STTNode did not raise on model init failure")
+
+    def test_state_transition_mutes_on_speaking(self):
+        """speech->SPEAKING transition should disable transcription."""
+        node = STTNode.__new__(STTNode)
+        node._set_transcription_enabled = MagicMock()
+
+        node.state_transition_callback(
+            SimpleNamespace(subsystem="speech", to_state="SPEAKING")
+        )
+
+        node._set_transcription_enabled.assert_called_once_with(
+            False,
+            reason="speech_state_speaking",
+        )
+
+    def test_state_transition_resumes_on_idle(self):
+        """speech->IDLE transition should re-enable transcription."""
+        node = STTNode.__new__(STTNode)
+        node._set_transcription_enabled = MagicMock()
+
+        node.state_transition_callback(
+            SimpleNamespace(subsystem="speech", to_state="IDLE")
+        )
+
+        node._set_transcription_enabled.assert_called_once_with(
+            True,
+            reason="speech_state_idle",
+        )
 
 
 @pytest.mark.parametrize(

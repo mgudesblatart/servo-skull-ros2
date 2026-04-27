@@ -8,6 +8,7 @@ Sherpa-ONNX streaming recognizer, and publishes completed transcripts.
 Topic wiring:
   Subscriptions:
     audio/raw  (std_msgs/UInt8MultiArray)  — raw int16 PCM at 48 kHz, mono
+        /skull_control/state_transition (servo_skull_msgs/StateTransition) — speech-state mute gate
   Publications:
     /speech_to_text/transcript  (std_msgs/String)  — completed utterance text
     /stt_node/ready             (std_msgs/Bool, latched)  — readiness flag
@@ -22,6 +23,7 @@ import os
 import queue
 import threading
 import traceback
+import time
 
 import numpy as np
 import rclpy
@@ -30,6 +32,7 @@ from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from scipy.signal import resample_poly
+from servo_skull_msgs.msg import StateTransition
 from std_msgs.msg import Bool, String, UInt8MultiArray
 
 
@@ -45,6 +48,10 @@ MODEL_DIR = os.path.join(get_package_share_directory("stt_node"), "models")
 # directly — but this documents the expected chunk cadence.
 BUFFER_SECONDS = 2
 BUFFER_SIZE = 48000 * BUFFER_SECONDS  # samples
+
+# Delay before STT resumes after speech returns to IDLE.
+# This absorbs residual output tail/room echo from the speaker path.
+STT_RESUME_DELAY_SEC = 0.8
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +73,9 @@ class STTNode(Node):
         self.audio_queue: queue.Queue[bytes] = queue.Queue()
         self.worker_thread: threading.Thread | None = None  # started via start_worker()
         self.running = True
+        self.transcription_enabled = True
+        self.transcription_resume_at_ts = 0.0
+        self._transcription_gate_lock = threading.Lock()
 
         self.get_logger().info("STT Node started.")
 
@@ -76,6 +86,12 @@ class STTNode(Node):
     def _setup_subscriptions(self):
         self.subscription = self.create_subscription(
             UInt8MultiArray, "audio/raw", self.audio_callback, 10
+        )
+        self.state_transition_subscription = self.create_subscription(
+            StateTransition,
+            "/skull_control/state_transition",
+            self.state_transition_callback,
+            10,
         )
 
     def _setup_publishers(self):
@@ -158,7 +174,61 @@ class STTNode(Node):
 
     def audio_callback(self, msg: UInt8MultiArray):
         """Forward raw audio bytes to the worker queue without processing."""
+        if not self._is_transcription_enabled():
+            return
         self.audio_queue.put(bytes(msg.data))
+
+    def state_transition_callback(self, msg: StateTransition):
+        """Mute STT while speech subsystem is in SPEAKING to suppress speaker loopback."""
+        if str(msg.subsystem).lower() != "speech":
+            return
+
+        to_state = str(msg.to_state).strip().upper()
+        if to_state == "SPEAKING":
+            self._set_transcription_enabled(False, reason="speech_state_speaking")
+        elif to_state == "IDLE":
+            self._set_transcription_enabled(True, reason="speech_state_idle")
+
+    def _is_transcription_enabled(self) -> bool:
+        with self._transcription_gate_lock:
+            if not self.transcription_enabled:
+                return False
+            return time.monotonic() >= self.transcription_resume_at_ts
+
+    def _set_transcription_enabled(self, enabled: bool, reason: str):
+        with self._transcription_gate_lock:
+            if self.transcription_enabled == enabled:
+                return
+            self.transcription_enabled = enabled
+            self.transcription_resume_at_ts = (
+                time.monotonic() + STT_RESUME_DELAY_SEC if enabled else 0.0
+            )
+
+        if enabled:
+            self.get_logger().info(
+                f"STT transcription scheduled to resume in {STT_RESUME_DELAY_SEC:.1f}s ({reason})."
+            )
+            return
+
+        self._clear_pending_audio()
+        self._reset_recognizer_stream()
+        self.get_logger().info(f"STT transcription muted ({reason}).")
+
+    def _clear_pending_audio(self):
+        """Drop queued mic frames so no stale speaker bleed is processed after unmute."""
+        while True:
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def _reset_recognizer_stream(self):
+        """Reset recognizer stream and local buffer to clear partial decode context."""
+        self.pcm_buffer = np.array([], dtype=np.float32)
+        try:
+            self.recognizer.reset(self.stream)
+        except Exception as e:
+            self.get_logger().warning(f"Failed to reset STT recognizer stream while muting: {e}")
 
     # -----------------------------------------------------------------------
     # Audio processing thread
@@ -188,6 +258,12 @@ class STTNode(Node):
                 # Interpret raw bytes as int16 PCM, convert to float32 [-1, 1]
                 pcm = np.frombuffer(chunk, dtype=np.int16)
                 pcm_float = pcm.astype(np.float32) / 32768.0
+
+                if not self._is_transcription_enabled():
+                    self.pcm_buffer = np.array([], dtype=np.float32)
+                    if once:
+                        break
+                    continue
 
                 self.pcm_buffer = np.concatenate((self.pcm_buffer, pcm_float))
 

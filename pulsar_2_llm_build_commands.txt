@@ -1,0 +1,26 @@
+pulsar2 llm_build \
+  --input_path Qwen/Qwen3-1.7B/ \
+  --output_path Qwen/Qwen3-1.7B-ax650-2k \
+  --hidden_state_type bf16 \
+  --kv_cache_len 2047 \
+  --prefill_len 128 \
+  --last_kv_cache_len 128 \
+  --last_kv_cache_len 512 \
+  --last_kv_cache_len 1024 \
+  --last_kv_cache_len 1536 \
+  --last_kv_cache_len 2048 \
+  --chip AX650 -c 1 --parallel 6
+
+
+  pulsar2 llm_build \
+  --input_path Qwen/Qwen3-4B/ \
+  --output_path Qwen/Qwen3-4B-ax650-2k \
+  --hidden_state_type bf16 \
+  --kv_cache_len 2047 \
+  --prefill_len 128 \
+  --last_kv_cache_len 128 \
+  --last_kv_cache_len 512 \
+  --last_kv_cache_len 1024 \
+  --last_kv_cache_len 1536 \
+  --last_kv_cache_len 2048 \
+  --chip AX650 -c 1 --parallel 6

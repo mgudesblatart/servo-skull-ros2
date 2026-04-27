@@ -51,7 +51,7 @@ class _HttpClientStub:
         self.reset_calls += 1
         return True
 
-    def generate_chat(self, messages):
+    def generate_chat(self, messages, max_output_tokens=None):
         self.chat_requests.append(messages)
         if self.outputs:
             return self.outputs.pop(0)
@@ -65,6 +65,9 @@ class TestLlmHttpContextBudget(unittest.TestCase):
         node._history_lock = threading.Lock()
         node._max_window_tokens = max_window_tokens
         node._budget_warning_level = "ok"
+        node._disable_thinking = True
+        node._summary_refinement_disable_thinking = False
+        node._summary_refinement_max_output_tokens = 384
         node._enable_llm_summary_refinement = enable_llm_summary_refinement
         node._conversation_buffer = ConversationBuffer(
             system_prompt="System prompt",
@@ -147,6 +150,61 @@ class TestLlmHttpContextBudget(unittest.TestCase):
         self.assertEqual(node.http_client.reset_calls, 1)
         self.assertEqual(node.tts_pub.messages[-1]["data"], "Short answer.")
         self.assertTrue(node.http_client.chat_requests)
+
+    def test_parse_input_envelope_normalizes_and_recovers_human_transcript(self):
+        node = LLMAgentHttpNode.__new__(LLMAgentHttpNode)
+
+        msg = SimpleNamespace(
+            channel=" HUMAN ",
+            source=" stt ",
+            type=" Transcript ",
+            event=" Human_Transcript ",
+            urgency=" MEDIUM ",
+            ts=1.0,
+            text="GOOD EVENING",
+            payload_json="{}",
+        )
+
+        parsed = node._parse_input_envelope(msg)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["channel"], "human")
+        self.assertEqual(parsed["source"], "stt")
+        self.assertEqual(parsed["type"], "transcript")
+        self.assertEqual(parsed["event"], "human_transcript")
+        self.assertEqual(parsed["urgency"], "medium")
+
+        # Invalid channel is recovered for canonical STT human transcript envelopes.
+        recovered_msg = SimpleNamespace(
+            channel="voice",
+            source="stt",
+            type="transcript",
+            event="human_transcript",
+            urgency="medium",
+            ts=2.0,
+            text="HELLO",
+            payload_json="{}",
+        )
+        recovered = node._parse_input_envelope(recovered_msg)
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered["channel"], "human")
+
+    def test_build_user_content_raw_marks_direct_human_classification(self):
+        envelope = {
+            "channel": "human",
+            "source": "stt",
+            "type": "transcript",
+            "event": "human_transcript",
+            "urgency": "medium",
+            "text": "GOOD EVENING",
+            "payload": {},
+        }
+
+        content = LLMAgentHttpNode._build_user_content_raw(envelope)
+
+        self.assertIn("Input Class: DIRECT_HUMAN", content)
+        self.assertIn("User transcript: GOOD EVENING", content)
+        self.assertIn("Respond as JSON only", content)
 
     def test_refine_summary_state_with_llm_returns_normalized_state(self):
         node = self._make_node(

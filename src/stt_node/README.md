@@ -13,6 +13,7 @@ Python ROS2 node. Streaming speech-to-text using Sherpa-ONNX with the Zipformer 
 | Direction | Topic | Type | Notes |
 |---|---|---|---|
 | Subscribe | `audio/raw` | `std_msgs/UInt8MultiArray` | Raw 16-bit LE PCM at 48000 Hz |
+| Subscribe | `/skull_control/state_transition` | `servo_skull_msgs/StateTransition` | Mutes STT while speech subsystem is in `SPEAKING` |
 | Publish | `/speech_to_text/transcript` | `std_msgs/String` | Transcribed utterance text |
 | Publish | `/stt_node/ready` | `std_msgs/Bool` | Latched; `true` once Sherpa-ONNX recogniser is loaded |
 
@@ -78,3 +79,5 @@ ros2 run stt_node stt_node
 - Audio is buffered in a `queue.Queue` and processed by a worker thread, keeping the ROS subscriber callback non-blocking.
 - There are no configurable ROS parameters beyond what Sherpa-ONNX exposes internally. To tune endpoint sensitivity, edit the `rule*_min_trailing_silence` values directly in the node source.
 - The recogniser is English-only (Zipformer EN 2023 model). Swap the model files and adjust paths/settings for other languages.
+- While `/skull_control/state_transition` reports `subsystem=speech` and `to_state=SPEAKING`, STT transcription is fully muted (incoming audio dropped, queue flushed, recognizer stream reset) to prevent speaker-loopback transcripts.
+- When speech transitions back to `IDLE`, STT resumes after a short fixed tail delay (`STT_RESUME_DELAY_SEC=0.8`) to avoid immediate post-playback echo pickup.
