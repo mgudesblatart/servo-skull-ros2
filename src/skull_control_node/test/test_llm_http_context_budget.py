@@ -1,5 +1,6 @@
 import threading
 import unittest
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -9,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 IMPORT_ERROR = None
 try:
     from skull_control_node.llm_agent_http_node import LLMAgentHttpNode
-    from skull_control_node.llm_conversation_buffer import ConversationBuffer
+    from skull_control_node.utils.llm_conversation_buffer import ConversationBuffer
 except ModuleNotFoundError as exc:
     IMPORT_ERROR = exc
 
@@ -51,8 +52,14 @@ class _HttpClientStub:
         self.reset_calls += 1
         return True
 
-    def generate_chat(self, messages, max_output_tokens=None):
-        self.chat_requests.append(messages)
+    def generate_chat(self, messages, max_output_tokens=None, timeout_sec=None):
+        self.chat_requests.append(
+            {
+                "messages": messages,
+                "max_output_tokens": max_output_tokens,
+                "timeout_sec": timeout_sec,
+            }
+        )
         if self.outputs:
             return self.outputs.pop(0)
         return self.output
@@ -68,13 +75,16 @@ class TestLlmHttpContextBudget(unittest.TestCase):
         node._disable_thinking = True
         node._summary_refinement_disable_thinking = False
         node._summary_refinement_max_output_tokens = 384
+        node._summary_refinement_unbounded_when_thinking = True
         node._enable_llm_summary_refinement = enable_llm_summary_refinement
+        node.system_prompt = "System prompt"
         node._conversation_buffer = ConversationBuffer(
             system_prompt="System prompt",
             max_turns=max_turns,
             max_window_tokens=max_window_tokens,
             reset_threshold_tokens=reset_threshold_tokens,
         )
+        node._append_history = [{"role": "system", "content": "System prompt"}]
         node.http_client = _HttpClientStub(outputs=http_outputs)
         node.status_pub = _PublisherStub()
         node.tts_pub = _PublisherStub()
@@ -114,6 +124,10 @@ class TestLlmHttpContextBudget(unittest.TestCase):
         self.assertEqual(len([msg for msg in history if msg["role"] == "assistant"]), 0)
         self.assertIn("Conversation summary:", history[1]["content"])
         self.assertIn("I am Servo Skull.", history[1]["content"])
+        self.assertEqual(node._append_history[0]["role"], "system")
+        self.assertEqual(node._append_history[0]["content"], "System prompt")
+        self.assertEqual(node._append_history[1]["role"], "system")
+        self.assertIn("Conversation summary:", node._append_history[1]["content"])
         self.assertEqual(node.http_client.reset_calls, 1)
         self.assertEqual(
             [msg["reason"] for msg in node.status_pub.messages[:2]],
@@ -122,13 +136,24 @@ class TestLlmHttpContextBudget(unittest.TestCase):
 
     def test_prompt_callback_resets_then_generates_response(self):
         node = self._make_node(max_window_tokens=220, max_turns=1, reset_threshold_tokens=140)
-        node._conversation_buffer.add_turn(
-            "Tell me about servo skull memory pressure and how context exhaustion works in detail.",
-            '{"thoughts":"analysis","tool_calls":[{"say_phrase":{"msg":"We need to manage context carefully."}}]}',
+        node._append_turn(
+            prompt_user_content=(
+                "Input Class: DIRECT_HUMAN\nUser transcript: "
+                "Tell me about servo skull memory pressure and how context exhaustion works in detail.\n\n"
+                "Respond as JSON only"
+            ),
+            compact_user_content="Tell me about servo skull memory pressure and how context exhaustion works in detail.",
+            raw_assistant_content='{"thoughts":"analysis","tool_calls":[{"say_phrase":{"msg":"We need to manage context carefully."}}]}',
+            compact_assistant_content='{"thoughts":"analysis","tool_calls":[{"say_phrase":{"msg":"We need to manage context carefully."}}]}',
         )
-        node._conversation_buffer.add_turn(
-            "What happens next?",
-            '{"thoughts":"more analysis","tool_calls":[{"say_phrase":{"msg":"We summarize, then reset."}}]}',
+        node._append_turn(
+            prompt_user_content=(
+                "Input Class: DIRECT_HUMAN\nUser transcript: What happens next?\n\n"
+                "Respond as JSON only"
+            ),
+            compact_user_content="What happens next?",
+            raw_assistant_content='{"thoughts":"more analysis","tool_calls":[{"say_phrase":{"msg":"We summarize, then reset."}}]}',
+            compact_assistant_content='{"thoughts":"more analysis","tool_calls":[{"say_phrase":{"msg":"We summarize, then reset."}}]}',
         )
 
         msg = SimpleNamespace(
@@ -148,7 +173,7 @@ class TestLlmHttpContextBudget(unittest.TestCase):
         self.assertIn("context_reset_requested", reasons)
         self.assertIn("context_budget_reset", reasons)
         self.assertEqual(node.http_client.reset_calls, 1)
-        self.assertEqual(node.tts_pub.messages[-1]["data"], "Short answer.")
+        self.assertEqual(node.tts_pub.messages[-1]["data"], "Short answer")
         self.assertTrue(node.http_client.chat_requests)
 
     def test_parse_input_envelope_normalizes_and_recovers_human_transcript(self):
@@ -267,13 +292,23 @@ class TestLlmHttpContextBudget(unittest.TestCase):
                 '{"thoughts":"brief","tool_calls":[{"say_phrase":{"msg":"Short answer."}}]}'
             ],
         )
-        node._conversation_buffer.add_turn(
-            "Tell me about context exhaustion in detail.",
-            '{"thoughts":"analysis","tool_calls":[{"say_phrase":{"msg":"We summarize, then reset."}}]}',
+        node._append_turn(
+            prompt_user_content=(
+                "Input Class: DIRECT_HUMAN\nUser transcript: Tell me about context exhaustion in detail.\n\n"
+                "Respond as JSON only"
+            ),
+            compact_user_content="Tell me about context exhaustion in detail.",
+            raw_assistant_content='{"thoughts":"analysis","tool_calls":[{"say_phrase":{"msg":"We summarize, then reset."}}]}',
+            compact_assistant_content='{"thoughts":"analysis","tool_calls":[{"say_phrase":{"msg":"We summarize, then reset."}}]}',
         )
-        node._conversation_buffer.add_turn(
-            "What happens next?",
-            '{"thoughts":"analysis","tool_calls":[{"say_phrase":{"msg":"I can explain the current plan."}}]}',
+        node._append_turn(
+            prompt_user_content=(
+                "Input Class: DIRECT_HUMAN\nUser transcript: What happens next?\n\n"
+                "Respond as JSON only"
+            ),
+            compact_user_content="What happens next?",
+            raw_assistant_content='{"thoughts":"analysis","tool_calls":[{"say_phrase":{"msg":"I can explain the current plan."}}]}',
+            compact_assistant_content='{"thoughts":"analysis","tool_calls":[{"say_phrase":{"msg":"I can explain the current plan."}}]}',
         )
 
         msg = SimpleNamespace(
@@ -293,7 +328,79 @@ class TestLlmHttpContextBudget(unittest.TestCase):
         self.assertIn("context exhaustion", history[1]["content"])
         self.assertEqual(node.http_client.reset_calls, 1)
         self.assertEqual(len(node.http_client.chat_requests), 2)
-        self.assertEqual(node.tts_pub.messages[-1]["data"], "Short answer.")
+        self.assertEqual(node.tts_pub.messages[-1]["data"], "Short answer")
+        self.assertEqual(node.http_client.chat_requests[0]["max_output_tokens"], 0)
+
+    def test_prompt_callback_persists_compact_history_turn(self):
+        node = self._make_node(max_window_tokens=1200, max_turns=4, reset_threshold_tokens=80)
+
+        long_reply = (
+            '{"thoughts":"' + ("x" * 420) + '",'
+            '"tool_calls":[{"say_phrase":{"msg":"' + ("A" * 420) + '"}}],'
+            '"debug":{"raw":"' + ("z" * 600) + '"}}'
+        )
+        node.http_client = _HttpClientStub(outputs=[long_reply])
+
+        msg = SimpleNamespace(
+            channel="human",
+            source="stt",
+            type="transcript",
+            event="human_transcript",
+            urgency="medium",
+            ts=1.0,
+            text="Please summarize your current context budget policy in one sentence.",
+            payload_json="{}",
+        )
+
+        node.prompt_callback(msg)
+
+        turns = node._conversation_buffer.recent_turns
+        self.assertEqual(len(turns), 1)
+        stored_user, stored_assistant = turns[0]
+
+        self.assertEqual(
+            stored_user,
+            "Please summarize your current context budget policy in one sentence.",
+        )
+        self.assertNotIn("Respond as JSON only", stored_user)
+        self.assertLess(len(stored_assistant), 420)
+
+        parsed_assistant = json.loads(stored_assistant)
+        self.assertEqual(sorted(parsed_assistant.keys()), ["thoughts", "tool_calls"])
+        self.assertNotIn("debug", stored_assistant)
+
+        append_history = node._append_history
+        self.assertGreaterEqual(len(append_history), 3)
+        self.assertEqual(append_history[-2]["role"], "user")
+        self.assertIn("Respond as JSON only", append_history[-2]["content"])
+        self.assertEqual(append_history[-1]["role"], "assistant")
+        self.assertIn("debug", append_history[-1]["content"])
+
+    def test_summary_refinement_respects_explicit_cap_when_thinking_disabled(self):
+        node = self._make_node(
+            enable_llm_summary_refinement=True,
+            http_outputs=[
+                '{"user_preferences":["prefers concise responses"],'
+                '"active_topics":[],"open_loops":[],"assistant_commitments":[],"known_facts":[]}'
+            ],
+        )
+        node._summary_refinement_disable_thinking = True
+        node._summary_refinement_max_output_tokens = 192
+
+        refined = node._refine_summary_state_with_llm(
+            prior_summary_state={},
+            recent_turns=[("hello", "{\"thoughts\":\"x\",\"tool_calls\":[]}")],
+            heuristic_summary_state={
+                "user_preferences": ["prefers concise responses"],
+                "active_topics": [],
+                "open_loops": [],
+                "assistant_commitments": [],
+                "known_facts": [],
+            },
+        )
+
+        self.assertIsNotNone(refined)
+        self.assertEqual(node.http_client.chat_requests[-1]["max_output_tokens"], 192)
 
 
 if __name__ == "__main__":

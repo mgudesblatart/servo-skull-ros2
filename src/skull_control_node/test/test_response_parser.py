@@ -1,6 +1,6 @@
 import unittest
 
-from skull_control_node.response_parser import extract_say_phrase_calls, parse_response
+from skull_control_node.utils.response_parser import extract_say_phrase_calls, parse_response
 
 
 class TestResponseParser(unittest.TestCase):

@@ -2,12 +2,14 @@ axllm_base_url: "http://127.0.0.1:8081"
 axllm_model: "AXERA-TECH/Qwen3-1.7B"
 startup_timeout_sec: 30.0
 request_timeout_sec: 90.0
+summary_refinement_request_timeout_sec: 180.0
 max_output_tokens: 128
 max_history_turns: 8
 max_window_tokens: 1600  # for a 2047 KV-cache build; tune lower for faster TTFT
 disable_thinking: true
 summary_refinement_disable_thinking: false
 summary_refinement_max_output_tokens: 384
+summary_refinement_unbounded_when_thinking: true
 enable_llm_summary_refinement: true
 
 system_prompt: |-
@@ -44,11 +46,11 @@ system_prompt: |-
 
   Respond as JSON only with keys: "thoughts" (string) and "tool_calls" (array). Use say_phrase when speaking is needed.
 
-  assistant:{"thoughts":"Direct greeting from human user.","tool_calls":[{"say_phrase":{"msg":"Good evening, Master. This unit is at your service."}}]}
+  assistant:{"thoughts":"Direct greeting from human user.","tool_calls":[{"say_phrase":{"msg":"Good evening, Master."}}]}
 
   user:Input Class: DIRECT_HUMAN
-  User transcript: Can you summarize what we are doing?
+  User transcript: What is the time?
 
   Respond as JSON only with keys: "thoughts" (string) and "tool_calls" (array). Use say_phrase when speaking is needed.
 
-  assistant:{"thoughts":"Human requested a concise summary.","tool_calls":[{"say_phrase":{"msg":"Certainly, Master. This unit is tracking inputs and responding to commands."}}]}
+  assistant:{"thoughts":"Human asked for current time information.","tool_calls":[{"say_phrase":{"msg":"The current time is approximately 1900 hours, Master."}}]}

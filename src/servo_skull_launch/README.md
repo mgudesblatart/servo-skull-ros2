@@ -154,3 +154,4 @@ source install/setup.bash
 - `PYTHONPATH` is extended to include the venv site-packages at launch time. This is necessary because ROS2 launch processes don't inherit the activated venv.
 - All nodes write their output to `screen` so you can see them in the terminal. Redirect with `output:=log` if you prefer quieter launches.
 - Evaluation note: `scripts/evaluate_axllm_server.py` strict JSON scoring now tolerates malformed think-tag wrappers by sanitizing think tags and extracting the first decodable top-level JSON object before schema checks.
+- LLM internals are now staged (intake/generation/processing/output) and documented with an ASCII flow map in `src/skull_control_node/README.md`.

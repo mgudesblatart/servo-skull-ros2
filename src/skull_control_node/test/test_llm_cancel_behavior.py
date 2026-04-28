@@ -62,9 +62,11 @@ class TestLlmCancelBehavior(unittest.TestCase):
         node.request_in_flight = threading.Event()
         node.runtime_reset_lock = threading.RLock()
         node.runtime_client = _RuntimeClientStub()
+        node.backend_mode = "axcl"
         node.inline_system_prompt = False
         node.system_prompt = ""
         node.tts_pub = _PublisherStub()
+        node.status_pub = _PublisherStub()
         node.get_logger = lambda: _LoggerStub()
         return node
 

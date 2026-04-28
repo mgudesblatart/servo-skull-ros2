@@ -51,7 +51,9 @@ class AxllmHttpClient:
             data_bytes = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
-        req = urllib.request.Request(url=url, method=method, data=data_bytes, headers=headers)
+        req = urllib.request.Request(
+            url=url, method=method, data=data_bytes, headers=headers
+        )
         timeout = timeout_sec if timeout_sec is not None else self.request_timeout_sec
 
         try:
@@ -59,7 +61,11 @@ class AxllmHttpClient:
                 status = getattr(response, "status", 200)
                 raw = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="replace") if hasattr(error, "read") else ""
+            body = (
+                error.read().decode("utf-8", errors="replace")
+                if hasattr(error, "read")
+                else ""
+            )
             try:
                 return error.code, json.loads(body)
             except Exception:
@@ -80,41 +86,62 @@ class AxllmHttpClient:
 
         while time.monotonic() < deadline:
             try:
-                status, payload = self._request_json("GET", "/v1/models", timeout_sec=2.0)
+                status, payload = self._request_json(
+                    "GET", "/v1/models", timeout_sec=2.0
+                )
                 if status == 200 and isinstance(payload, dict):
                     return
-                last_error = f"Unexpected readiness response: status={status}, payload={payload}"
+                last_error = (
+                    f"Unexpected readiness response: status={status}, payload={payload}"
+                )
             except Exception as error:
                 last_error = str(error)
             time.sleep(0.2)
 
         raise TimeoutError(f"Timed out waiting for axllm HTTP readiness: {last_error}")
 
-    def generate_chat(self, messages: list[dict], max_output_tokens: int | None = None) -> str:
+    def generate_chat(
+        self,
+        messages: list[dict],
+        max_output_tokens: int | None = None,
+        timeout_sec: float | None = None,
+    ) -> str:
         """
         Send a full OpenAI-style messages list and return the assistant reply text.
 
         Args:
             messages: List of {"role": ..., "content": ...} dicts.
                       Roles: "system", "user", "assistant".
+            max_output_tokens: Token budget control (None=default, >0=cap, <=0=unbounded).
+            timeout_sec: Optional per-call timeout in seconds (overrides client default).
         """
         payload = {
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "max_tokens": (
-                max(1, int(max_output_tokens))
-                if max_output_tokens is not None
-                else self.max_output_tokens
-            ),
         }
 
-        status, response = self._request_json("POST", "/v1/chat/completions", payload=payload)
+        # Token budget controls:
+        # - max_output_tokens is None: use client default cap
+        # - max_output_tokens > 0: use explicit cap
+        # - max_output_tokens <= 0: omit max_tokens field (server-side default/unbounded)
+        if max_output_tokens is None:
+            payload["max_tokens"] = self.max_output_tokens
+        elif int(max_output_tokens) > 0:
+            payload["max_tokens"] = max(1, int(max_output_tokens))
+
+        status, response = self._request_json(
+            "POST", "/v1/chat/completions", payload=payload, timeout_sec=timeout_sec
+        )
         if status != 200:
-            raise RuntimeError(f"axllm chat completion failed: status={status}, body={response}")
+            raise RuntimeError(
+                f"axllm chat completion failed: status={status}, body={response}"
+            )
 
         if not isinstance(response, dict):
-            raise RuntimeError(f"Invalid axllm response type: {type(response).__name__}")
+            raise RuntimeError(
+                f"Invalid axllm response type: {type(response).__name__}"
+            )
 
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -138,12 +165,18 @@ class AxllmHttpClient:
             "max_tokens": self.max_output_tokens,
         }
 
-        status, response = self._request_json("POST", "/v1/chat/completions", payload=payload)
+        status, response = self._request_json(
+            "POST", "/v1/chat/completions", payload=payload
+        )
         if status != 200:
-            raise RuntimeError(f"axllm chat completion failed: status={status}, body={response}")
+            raise RuntimeError(
+                f"axllm chat completion failed: status={status}, body={response}"
+            )
 
         if not isinstance(response, dict):
-            raise RuntimeError(f"Invalid axllm response type: {type(response).__name__}")
+            raise RuntimeError(
+                f"Invalid axllm response type: {type(response).__name__}"
+            )
 
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:

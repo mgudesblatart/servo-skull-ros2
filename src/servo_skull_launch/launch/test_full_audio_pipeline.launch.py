@@ -106,6 +106,7 @@ def generate_launch_description():
             'config_path': default_http_config,
             'disable_thinking': LaunchConfiguration('disable_thinking'),
             'summary_refinement_disable_thinking': LaunchConfiguration('summary_refinement_disable_thinking'),
+            'summary_refinement_request_timeout_sec': LaunchConfiguration('summary_refinement_request_timeout_sec'),
             'summary_refinement_max_output_tokens': LaunchConfiguration('summary_refinement_max_output_tokens'),
             'max_history_turns': LaunchConfiguration('max_history_turns'),
             'max_window_tokens': LaunchConfiguration('max_window_tokens'),
@@ -279,6 +280,11 @@ def generate_launch_description():
             'summary_refinement_max_output_tokens',
             default_value='384',
             description='Max output tokens for summary-refinement LLM calls.',
+        ),
+        DeclareLaunchArgument(
+            'summary_refinement_request_timeout_sec',
+            default_value='180.0',
+            description='HTTP timeout for summary-refinement LLM calls in seconds (allows longer thinking).',
         ),
         DeclareLaunchArgument(
             'max_window_tokens',

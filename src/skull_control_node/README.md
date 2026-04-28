@@ -18,6 +18,62 @@ Guardrails in current implementation:
 
 **Pipeline position:** STT → skull_control gate (`/skull_control/llm_input`) → **LLM Agent** → TTS
 
+**Runtime flow (staged, current):**
+
+```text
+LlmInput msg
+   |
+   v
+prepare_prompt_intake(...)                [utils/prompt_intake_stage.py]
+  - validates envelope
+  - enforces minimal-mode lane
+  - builds user_content (+ no-think hint)
+   |
+   v
+_get_append_remaining_budget(...)         [ContextResetManager]
+_publish_budget_status(...)
+if low budget -> _perform_context_reset(...)
+   |
+   v
+run_generation(...)                       [utils/generation_stage.py]
+  - build_messages
+  - HTTP generate_chat
+  - cancel/error status handling
+   |
+   v
+process_model_response(...)               [utils/response_processing_stage.py]
+  - parse_response contract extraction
+  - sanitize_spoken_phrase filtering
+  - compact/raw history artifacts
+   |
+   v
+persist_and_publish_response(...)         [utils/response_output_stage.py]
+  - append compact+raw turn to history lanes
+  - publish /text_to_speech/text_input phrases
+```
+
+**Class/method responsibility map:**
+
+```text
+LLMAgentHttpNode
+  |- ROS interface + orchestration only
+  |- control_callback()        -> CANCEL/HALT/STOP/RESET controls
+  |- prompt_callback()         -> stage pipeline coordinator
+  |- _publish_status()         -> typed LlmStatus publishing
+  `- delegates history/reset   -> ContextResetManager
+
+ContextResetManager (utils/context_reset_manager.py)
+  |- owns append-history lane + compact summary lane interactions
+  |- budget tracking + threshold warnings
+  |- proactive reset + summary reseed flow
+  `- optional LLM summary refinement call path
+
+ConversationBuffer (utils/llm_conversation_buffer.py)
+  |- deterministic summary state extraction
+  |- rolling compact turn window
+  `- token-budget-aware summary shrinking
+```
+
 **ROS interface:**
 
 | Direction | Topic | Type | Notes |
@@ -113,7 +169,7 @@ The LLM is instructed to respond with exactly one JSON object per inference:
 }
 ```
 
-`response_parser.py` handles the following fallback chain:
+`utils/response_parser.py` handles the following fallback chain:
 1. Strict JSON parse after stripping markdown fences
 2. Balanced brace extraction + parse
 3. Regex `{.*}` extraction + parse
@@ -247,7 +303,13 @@ See [`servo_skull_launch`](../servo_skull_launch/README.md) for the full orchest
 |---|---|
 | `llm_agent_http_node.py` | Main HTTP-backed ROS2 LLM agent |
 | `axllm_http_client.py` | OpenAI-compatible HTTP client wrapper for `axllm serve` |
-| `response_parser.py` | JSON contract parser with multi-strategy fallback chain |
+| `utils/response_parser.py` | JSON contract parser with multi-strategy fallback chain |
+| `utils/llm_conversation_buffer.py` | Deterministic compact history window + summary state |
+| `utils/context_reset_manager.py` | Stateful budget/reset/refinement manager for history lanes |
+| `utils/prompt_intake_stage.py` | Intake validation + minimal-mode gating + prompt shaping |
+| `utils/generation_stage.py` | HTTP generation stage + cancel/error outcome shaping |
+| `utils/response_processing_stage.py` | Parse/sanitize stage that builds publish/persist artifacts |
+| `utils/response_output_stage.py` | History persistence + TTS phrase publish stage |
 | `skull_control_bt_node.py` | BT-based servo pan/tilt tracking node |
 | `skull_control_node.py` | Core skull control logic |
 | `configs/http_servo_skull.yaml` | Active HTTP agent configuration |

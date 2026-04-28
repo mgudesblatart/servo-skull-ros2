@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from skull_control_node.llm_conversation_buffer import ConversationBuffer
+from skull_control_node.utils.llm_conversation_buffer import ConversationBuffer
 
 
 class TestConversationBuffer(unittest.TestCase):

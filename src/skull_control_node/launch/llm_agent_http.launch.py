@@ -44,6 +44,11 @@ def generate_launch_description():
             description='Per-request HTTP timeout in seconds.',
         ),
         DeclareLaunchArgument(
+            'summary_refinement_request_timeout_sec',
+            default_value='180.0',
+            description='HTTP timeout for summary-refinement LLM calls in seconds (allows longer thinking).',
+        ),
+        DeclareLaunchArgument(
             'max_output_tokens',
             default_value='128',
             description='Maximum assistant output tokens per response.',
@@ -93,6 +98,7 @@ def generate_launch_description():
                 'max_output_tokens': LaunchConfiguration('max_output_tokens'),
                 'disable_thinking': LaunchConfiguration('disable_thinking'),
                 'summary_refinement_disable_thinking': LaunchConfiguration('summary_refinement_disable_thinking'),
+                'summary_refinement_request_timeout_sec': LaunchConfiguration('summary_refinement_request_timeout_sec'),
                 'summary_refinement_max_output_tokens': LaunchConfiguration('summary_refinement_max_output_tokens'),
                 'max_history_turns': LaunchConfiguration('max_history_turns'),
                 'max_window_tokens': LaunchConfiguration('max_window_tokens'),

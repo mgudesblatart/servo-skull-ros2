@@ -18,7 +18,7 @@ Parsing pipeline (parse_response):
   3. Try a greedy regex match for {.*}.
   4. json.loads each candidate; validate required keys.
   5. If json_repair is available, try it on all candidates.
-  6. Fall back to wrapping the whole cleaned text in a synthetic contract.
+  6. Fall back to wrapping the whole output in a synthetic contract.
 """
 
 import json
@@ -26,19 +26,13 @@ import re
 from typing import Any
 
 
-# Only keys the model contract permits.
 REQUIRED_KEYS = {"thoughts", "tool_calls"}
 
-# Used to identify and skip runtime diagnostic lines in model output
 RUNTIME_LOG_LINE_PATTERN = re.compile(r"^\[[A-Z]\]\[")
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 ROLE_PREFIX_PATTERN = re.compile(r"^(assistant|user|system)\s*:\s*", re.IGNORECASE)
 META_TAG_LINE_PATTERN = re.compile(r"^</?[a-zA-Z_][a-zA-Z0-9_-]*\s*/?>$")
 
-
-# ---------------------------------------------------------------------------
-# Text cleaning helpers
-# ---------------------------------------------------------------------------
 
 def _strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_PATTERN.sub("", text)
@@ -56,10 +50,6 @@ def _strip_markdown_fences(raw_text: str) -> str:
         text = "\n".join(lines).strip()
     return text
 
-
-# ---------------------------------------------------------------------------
-# JSON typo repair
-# ---------------------------------------------------------------------------
 
 def _repair_common_json_typos(text: str) -> str:
     """
@@ -81,10 +71,6 @@ def _repair_common_json_typos(text: str) -> str:
     )
     return repaired
 
-
-# ---------------------------------------------------------------------------
-# JSON extraction strategies
-# ---------------------------------------------------------------------------
 
 def _extract_balanced_json_block(raw_text: str) -> str | None:
     """
@@ -134,17 +120,11 @@ def _validate_schema(payload: Any) -> dict[str, Any] | None:
         return None
     if not isinstance(payload["tool_calls"], list):
         return None
-    # Normalize to the strict two-key contract to avoid leaking legacy keys
-    # (for example final_output) into downstream state/history.
     return {
         "thoughts": payload["thoughts"],
         "tool_calls": payload["tool_calls"],
     }
 
-
-# ---------------------------------------------------------------------------
-# Fallback: wrap plain text in a synthetic contract so the skull says *something*
-# ---------------------------------------------------------------------------
 
 def _extract_plaintext_reply(raw_text: str) -> str:
     """
@@ -156,10 +136,8 @@ def _extract_plaintext_reply(raw_text: str) -> str:
         stripped = _strip_ansi(line).strip()
         if not stripped:
             continue
-        # Drop prompt-role scaffolding lines often leaked by chat runtimes.
         if ROLE_PREFIX_PATTERN.match(stripped):
             continue
-        # Drop standalone XML-style meta tags (for example <think>, <tool_call>).
         if META_TAG_LINE_PATTERN.match(stripped):
             continue
         if stripped == "prompt >>":
@@ -187,10 +165,6 @@ def _build_fallback_contract(raw_text: str) -> dict[str, Any] | None:
     }
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
 def parse_response(raw_text: str) -> dict[str, Any] | None:
     """
     Try every recovery strategy to extract a valid response contract from
@@ -198,31 +172,25 @@ def parse_response(raw_text: str) -> dict[str, Any] | None:
     """
     candidates: list[str] = []
 
-    # Strip reasoning/meta wrappers before any other processing.
-    # Keep JSON payloads that may appear between tags.
     think_stripped = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL | re.IGNORECASE).strip()
     working_text = think_stripped if think_stripped else raw_text
     working_text = re.sub(r"</?(think|tool_call)\s*/?>", "", working_text, flags=re.IGNORECASE)
     working_text = _repair_common_json_typos(working_text)
 
-    # Strategy 1: strip markdown fences, try direct parse
     stripped = _strip_markdown_fences(working_text)
     if stripped:
         candidates.append(stripped)
 
-    # Strategy 2: scan for a balanced JSON block
     balanced = _extract_balanced_json_block(stripped or working_text)
     if balanced and balanced not in candidates:
         candidates.append(balanced)
 
-    # Strategy 3: greedy regex {.*} (handles trailing junk after closing brace)
     regex_match = re.search(r"\{.*\}", working_text, re.DOTALL)
     if regex_match:
         candidate = regex_match.group(0).strip()
         if candidate not in candidates:
             candidates.append(candidate)
 
-    # Try json.loads on each candidate
     for candidate in candidates:
         try:
             parsed = json.loads(candidate)
@@ -232,7 +200,6 @@ def parse_response(raw_text: str) -> dict[str, Any] | None:
         if valid is not None:
             return valid
 
-    # Optional: use json_repair if installed (handles truncated/malformed JSON)
     try:
         from json_repair import repair_json
     except ImportError:
@@ -248,7 +215,6 @@ def parse_response(raw_text: str) -> dict[str, Any] | None:
             if valid is not None:
                 return valid
 
-    # Final fallback: wrap whatever the model said in a minimal valid contract
     return _build_fallback_contract(working_text)
 
 
@@ -266,7 +232,6 @@ def extract_say_phrase_calls(parsed: dict[str, Any]) -> list[str]:
         if not isinstance(tool_call, dict):
             continue
 
-        # Preferred format: inline dict
         say_phrase = tool_call.get("say_phrase")
         if isinstance(say_phrase, dict):
             message = say_phrase.get("msg") or say_phrase.get("text")
@@ -274,7 +239,6 @@ def extract_say_phrase_calls(parsed: dict[str, Any]) -> list[str]:
                 messages.append(message.strip())
             continue
 
-        # Alternative format: name + args
         if tool_call.get("name") == "say_phrase":
             arguments = tool_call.get("args", {})
             if isinstance(arguments, dict):
